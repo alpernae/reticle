@@ -36,6 +36,11 @@ yarn-error.log*
 # vercel
 .vercel
 
+# local database (SQLite WAL) — data.json remains a committed-free backup snapshot
+/data.sqlite
+/data.sqlite-*
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+/data.backup-*.sqlite

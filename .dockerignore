@@ -1,0 +1,13 @@
+node_modules
+.next
+.git
+.opencode
+*.sqlite
+*.sqlite-*
+data.json
+npm-debug.log*
+.env*
+Dockerfile
+docker-compose.yml
+.dockerignore
+tsconfig.tsbuildinfo

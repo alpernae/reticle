@@ -1,0 +1,25 @@
+# docker compose up -d --build   →   http://localhost:3000
+# The SQLite database lives in the named volume "payload-data" (/data in the container).
+# (The volume keeps the original project name on purpose: renaming it would leave existing data behind.)
+# Copy your existing local database in once:
+#   docker compose cp ./data.sqlite reticle:/data/data.sqlite && docker compose restart reticle
+services:
+  reticle:
+    build:
+      context: .
+      args:
+        INSTALL_CLAUDE_CLI: "true"
+    image: reticle:latest
+    container_name: reticle
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      DATA_DIR: /data
+      # Optional — otherwise save these on the Settings page (stored in SQLite):
+      # CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN}
+    volumes:
+      - payload-data:/data
+
+volumes:
+  payload-data:
