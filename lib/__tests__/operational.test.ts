@@ -9,6 +9,7 @@ let apify: typeof import('../apify');
 let cache: typeof import('../cache');
 let ai: typeof import('../ai');
 let appState: typeof import('../app-state');
+let mindmaps: typeof import('../mindmaps');
 
 beforeAll(async () => {
   process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'reticle-operational-'));
@@ -18,6 +19,7 @@ beforeAll(async () => {
   cache = await import('../cache');
   ai = await import('../ai');
   appState = await import('../app-state');
+  mindmaps = await import('../mindmaps');
 });
 
 describe('automations table', () => {
@@ -149,5 +151,40 @@ describe('app state table', () => {
     appState.writeState('lastAnalysis', { text: 'x' });
     expect(appState.readState('lastAnalysis', null)).toEqual({ text: 'x' });
     expect(store.getAppState('lastAnalysis')).toBe('{"text":"x"}');
+  });
+});
+
+describe('mindmaps table', () => {
+  it('moves legacy meta.mindmaps into rows once', () => {
+    const store = db.getStore();
+    store.setMeta('mindmaps', JSON.stringify([{
+      id: 'map1', title: 'Old map',
+      nodes: [{ id: 'root', text: 'Central idea', x: 0, y: 0, kind: 'root' }],
+      edges: [], created: 1, updated: 2,
+    }]));
+
+    expect(mindmaps.listMaps()).toHaveLength(1);
+    expect(store.getMeta('mindmaps')).toBe('');
+    expect(store.getMindMapRow('map1')?.title).toBe('Old map');
+    expect(mindmaps.listMaps()).toHaveLength(1); // idempotent
+  });
+
+  it('creates, updates and deletes a single map', () => {
+    const store = db.getStore();
+    const saved = mindmaps.saveMap({
+      title: 'New map',
+      nodes: [{ id: 'root', text: 'Start', x: 0, y: 0, kind: 'root' }],
+      edges: [],
+    });
+    expect(saved.id).toMatch(/^map/);
+    expect(store.listMindMapRows()).toHaveLength(2);
+
+    const renamed = mindmaps.saveMap({ id: saved.id, title: 'Renamed' });
+    expect(renamed.title).toBe('Renamed');
+    expect(renamed.nodes).toHaveLength(1); // existing nodes kept
+
+    mindmaps.deleteMap(saved.id);
+    expect(store.getMindMapRow(saved.id)).toBeUndefined();
+    expect(mindmaps.listMaps()).toHaveLength(1);
   });
 });

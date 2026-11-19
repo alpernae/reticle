@@ -4,7 +4,7 @@
 // whatever is already in SQLite.
 import 'server-only';
 import { getStore, type PostRow } from './db';
-import { readState, writeState } from './app-state';
+import { readState, writeState, readStateRaw, writeStateRaw } from './app-state';
 import { analyze, patternLibrary, patternTable, winners, winnerCard } from './patterns';
 import { findRecycled, recycledText } from './recycle';
 import { geoRegions } from './geo';
@@ -91,13 +91,13 @@ function reclassifyIfNeeded() {
   if (classifierChecked) return;
   classifierChecked = true;
   const db = getStore();
-  if (db.getMeta('classifierVersion') === CLASSIFIER_VERSION) return;
+  if (readStateRaw('classifierVersion') === CLASSIFIER_VERSION) return;
   for (const r of db.allPosts()) {
     const p = { title: r.title, text: r.body || r.text } as Post;
     classify(p);
     db.setClassification(r.id, (p.T || '').slice(0, 2000), JSON.stringify(p.topics || []), p.security ? 1 : 0, p.dev ? 1 : 0);
   }
-  db.setMeta('classifierVersion', CLASSIFIER_VERSION);
+  writeStateRaw('classifierVersion', CLASSIFIER_VERSION);
 }
 
 // ---------------- analysis ----------------

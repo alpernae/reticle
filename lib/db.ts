@@ -49,6 +49,9 @@ export type ProviderHealthRow = {
   key: string; ok: number | null; msg: string | null; ts: number | null;
   retryAt: number | null; latencyMs: number | null;
 };
+export type MindMapRow = {
+  id: string; title: string; nodes: string; edges: string; created: number; updated: number;
+};
 
 /** Depth of the current transaction on this connection (SQLite has one). */
 let txDepth = 0;
@@ -256,6 +259,23 @@ export class SocialDB {
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated = excluded.updated`).run(key, value, Date.now());
   }
   deleteAppState(key: string) { this.prep('DELETE FROM app_state WHERE key = ?').run(key); }
+
+  // ---- mind maps (nodes/edges JSON, one row per map) ----
+  listMindMapRows(): MindMapRow[] {
+    return this.prep('SELECT id, title, nodes, edges, created, updated FROM mindmaps ORDER BY updated DESC')
+      .all() as unknown as MindMapRow[];
+  }
+  getMindMapRow(id: string): MindMapRow | undefined {
+    return this.prep('SELECT id, title, nodes, edges, created, updated FROM mindmaps WHERE id = ?')
+      .get(id) as MindMapRow | undefined;
+  }
+  upsertMindMapRow(m: MindMapRow) {
+    this.prep(`INSERT INTO mindmaps (id, title, nodes, edges, created, updated) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET title = excluded.title, nodes = excluded.nodes, edges = excluded.edges,
+         created = excluded.created, updated = excluded.updated`)
+      .run(m.id, m.title, m.nodes, m.edges, m.created, m.updated);
+  }
+  deleteMindMapRow(id: string) { this.prep('DELETE FROM mindmaps WHERE id = ?').run(id); }
 
   // ---- secrets (AES-256-GCM rows; encryption lives in lib/secrets.ts) ----
   getSecretRow(name: string): { ciphertext: string; iv: string; tag: string } | undefined {

@@ -379,7 +379,7 @@ Main costs of the proposal: a migration (data moves out of `meta`), slightly mor
 
 Phases 0–2 are independent of each other's internals and can land in any order. Phase 3 depends on 1 (it needs migrations and `tx()`). Phase 4's snapshot rebuild runs best as a task (phase 3), but it can start as a synchronous rebuild at the end of each ingest.
 
-**Status (2026-11-19):** Phase 0 is implemented. `importNormalized` runs in one `BEGIN IMMEDIATE` transaction; the scheduler tick polls active Apify runs; the time zone is stored in `meta` and drives `nextRunOf`, hour histograms, pattern time buckets, recommendations and the usage day boundary; startup no longer re-enables OpenCode. `npm run typecheck`, `npm test` (43 tests) and `npm run build` pass. Phase 1 is next.
+**Status (2026-11-19):** Phases 0 and 1 are implemented. Phase 0: `importNormalized` runs in one `BEGIN IMMEDIATE` transaction, the scheduler tick polls active Apify runs, the stored time zone drives `nextRunOf` and every hour bucket, and startup no longer re-enables OpenCode. Phase 1: a `PRAGMA user_version` migration runner (migrations 001–006), a shared prepared-statement cache, AES-256-GCM secrets, typed settings, and real tables for automations, collector runs, caches, provider health, app state and mind maps. Legacy `meta` values migrate lazily on first read and the meta copy is cleared; `accounts` and `ensureColumns` are gone. `npm run typecheck`, `npm test` (65 tests) and `npm run build` pass. Phase 2 is next.
 
 ---
 

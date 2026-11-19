@@ -6,8 +6,8 @@
 // returns exact public views / likes / comments / subscriber counts.
 // Channel list is shared with the YouTube row on Sources.
 import 'server-only';
-import { getStore } from './db';
 import { getSecret, setSecret } from './secrets';
+import { readState, writeState } from './app-state';
 import { importNormalized, type NormalizedPost, type ImportCounts } from './normalize';
 import { readConfig } from './apify';
 
@@ -20,8 +20,7 @@ export function getYouTubeKey(): string | null {
 export function setYouTubeKey(k: string) { setSecret('youtubeApiKey', String(k || '').slice(0, 120)); }
 export function youtubeStatus() {
   const k = getYouTubeKey();
-  let last: unknown = null;
-  try { last = JSON.parse(getStore().getMeta('youtubeLastRun') || 'null'); } catch {}
+  const last = readState<unknown>('youtubeLastRun', null);
   return { connected: !!k, mask: k ? '••••' + k.slice(-4) : null, last };
 }
 
@@ -88,7 +87,7 @@ export async function collectYouTube(perChannel = 10): Promise<ImportCounts & { 
   }
   const counts = importNormalized(posts);
   const res = { ...counts, channels: list.length, errors };
-  getStore().setMeta('youtubeLastRun', JSON.stringify({ ts: Date.now(), ...res }));
+  writeState('youtubeLastRun', { ts: Date.now(), ...res });
   return res;
 }
 
