@@ -6,10 +6,11 @@
 // runtime file reads.
 import type { DatabaseSync } from 'node:sqlite';
 import * as initial from './migrations/001-initial';
+import * as secrets from './migrations/002-secrets';
 
 export type Migration = { version: number; name: string; up(db: DatabaseSync): void };
 
-const MIGRATIONS: Migration[] = [initial];
+const MIGRATIONS: Migration[] = [initial, secrets];
 export const MIGRATION_VERSION = Math.max(...MIGRATIONS.map(m => m.version));
 
 /** Current PRAGMA user_version (0 = never migrated). */

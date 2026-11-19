@@ -7,16 +7,17 @@
 // Channel list is shared with the YouTube row on Sources.
 import 'server-only';
 import { getStore } from './db';
+import { getSecret, setSecret } from './secrets';
 import { importNormalized, type NormalizedPost, type ImportCounts } from './normalize';
 import { readConfig } from './apify';
 
 const API = 'https://www.googleapis.com/youtube/v3';
 
 export function getYouTubeKey(): string | null {
-  const k = (getStore().getMeta('youtubeApiKey') || '').trim();
+  const k = getSecret('youtubeApiKey') || '';
   return k.length >= 20 ? k : null;
 }
-export function setYouTubeKey(k: string) { getStore().setMeta('youtubeApiKey', String(k || '').trim().slice(0, 120)); }
+export function setYouTubeKey(k: string) { setSecret('youtubeApiKey', String(k || '').slice(0, 120)); }
 export function youtubeStatus() {
   const k = getYouTubeKey();
   let last: unknown = null;

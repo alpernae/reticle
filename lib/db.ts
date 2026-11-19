@@ -9,7 +9,7 @@ import path from 'node:path';
 import { MIGRATION_VERSION, runMigrations } from './db/migrate';
 
 // DATA_DIR lets Docker keep the database on a volume (/data); locally it's the project folder.
-const DATA_DIR = process.env.DATA_DIR || process.cwd();
+export const DATA_DIR = process.env.DATA_DIR || process.cwd();
 try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
 export const DB_FILE = path.join(DATA_DIR, 'data.sqlite');
 const JSON_FILE = path.join(DATA_DIR, 'data.json');
@@ -48,7 +48,7 @@ export class SocialDB {
   /** Prepared-statement cache shared by every SocialDB wrapper on this handle. */
   private prep(sql: string): StatementSync {
     let s = this.stmts.get(sql);
-    if (!s) { s = this.prep(sql); this.stmts.set(sql, s); }
+    if (!s) { s = this.db.prepare(sql); this.stmts.set(sql, s); }
     return s;
   }
 
@@ -134,6 +134,19 @@ export class SocialDB {
   setMeta(key: string, value: string) {
     this.prep('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
   }
+
+  // ---- secrets (AES-256-GCM rows; encryption lives in lib/secrets.ts) ----
+  getSecretRow(name: string): { ciphertext: string; iv: string; tag: string } | undefined {
+    return this.prep('SELECT ciphertext, iv, tag FROM secrets WHERE name = ?').get(name) as
+      { ciphertext: string; iv: string; tag: string } | undefined;
+  }
+  setSecretRow(name: string, ciphertext: string, iv: string, tag: string) {
+    this.prep(`INSERT INTO secrets (name, ciphertext, iv, tag, updated) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(name) DO UPDATE SET ciphertext = excluded.ciphertext, iv = excluded.iv, tag = excluded.tag, updated = excluded.updated`)
+      .run(name, ciphertext, iv, tag, Date.now());
+  }
+  deleteSecretRow(name: string) { this.prep('DELETE FROM secrets WHERE name = ?').run(name); }
+  countSecrets(): number { return (this.prep('SELECT COUNT(*) c FROM secrets').get() as { c: number }).c; }
 
   // ---- auth (owner account + local sessions) ----
   countUsers(): number {

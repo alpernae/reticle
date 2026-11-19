@@ -14,6 +14,7 @@
 // are NOT obtainable through Apify; that needs an own-account importer later.
 import 'server-only';
 import { getStore, type PostRow } from './db';
+import { getSecret, setSecret, secretMask } from './secrets';
 import { importItems, isPlatform as isPlat, PLAT_LABEL as LABELS, type Platform } from './normalize';
 
 export type ApifyPlatform = Platform;
@@ -33,17 +34,14 @@ const DEFAULT_CONFIG: ApifyConfig = {
 
 export function isPlatform(k: string): k is ApifyPlatform { return isPlat(k); }
 
-// ---------------- token (stored locally in SQLite meta only) ----------------
+// ---------------- token (encrypted at rest; see lib/secrets.ts) ----------------
 export function getApifyToken(): string | null {
-  const t = (getStore().getMeta('apifyToken') || '').trim();
+  const t = getSecret('apifyToken') || '';
   return t.length >= 20 ? t : null;
 }
-export function setApifyToken(t: string) { getStore().setMeta('apifyToken', String(t || '').trim().slice(0, 200)); }
-export function clearApifyToken() { getStore().setMeta('apifyToken', ''); }
-export function tokenMasked(): string | null {
-  const t = (getStore().getMeta('apifyToken') || '').trim();
-  return t ? '••••' + t.slice(-4) : null;
-}
+export function setApifyToken(t: string) { setSecret('apifyToken', String(t || '').slice(0, 200)); }
+export function clearApifyToken() { setSecret('apifyToken', ''); }
+export function tokenMasked(): string | null { return secretMask('apifyToken'); }
 
 export async function verifyToken(token: string): Promise<{ ok: boolean; username?: string; error?: string }> {
   try {

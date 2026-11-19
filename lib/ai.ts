@@ -16,6 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import { getStore } from './db';
+import { getSecret, setSecret } from './secrets';
 
 export type ProviderId = 'claude-cli' | 'anthropic' | 'opencode';
 export const PROVIDER_LABEL: Record<ProviderId, string> = {
@@ -67,12 +68,12 @@ export function saveAIConfig(next: Partial<AIConfig>): AIConfig {
   return readAIConfig();
 }
 
-// ---------------- secrets (local SQLite meta only) ----------------
+// ---------------- secrets (AES-256-GCM rows in SQLite; see lib/secrets.ts) ----------------
 const mask = (s: string | null) => (s ? '••••' + s.slice(-4) : null);
-export const getAnthropicKey = () => (getStore().getMeta('anthropicKey') || '').trim() || null;
-export const setAnthropicKey = (k: string) => getStore().setMeta('anthropicKey', String(k || '').trim().slice(0, 300));
-export const getClaudeOAuthToken = () => (getStore().getMeta('claudeOAuthToken') || '').trim() || null;
-export const setClaudeOAuthToken = (k: string) => getStore().setMeta('claudeOAuthToken', String(k || '').trim().slice(0, 400));
+export const getAnthropicKey = () => getSecret('anthropicKey');
+export const setAnthropicKey = (k: string) => setSecret('anthropicKey', String(k || '').slice(0, 300));
+export const getClaudeOAuthToken = () => getSecret('claudeOAuthToken');
+export const setClaudeOAuthToken = (k: string) => setSecret('claudeOAuthToken', String(k || '').slice(0, 400));
 
 // ---------------- claude CLI ----------------
 /** Find the claude executable: configured path → PATH → common install dirs. */
