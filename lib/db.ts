@@ -36,6 +36,15 @@ export type AiRunRow = {
   id: string; kind: string; title: string; page: string; platform: string; status: string; steps: string;
   provider: string; model: string; error: string; created: number; finished: number | null; ms: number | null;
 };
+export type AutomationRow = {
+  id: string; name: string; description: string; enabled: number;
+  steps: string; schedule: string; nextRun: number | null; lastRun: number | null;
+  history: string; created: number; updated: number;
+};
+export type CollectorRunRow = {
+  id: string; platform: string; actor: string; ts: number; status: string;
+  items: number | null; imported: string | null; error: string | null; note: string | null; costUsd: number | null;
+};
 
 /** Depth of the current transaction on this connection (SQLite has one). */
 let txDepth = 0;
@@ -147,6 +156,70 @@ export class SocialDB {
   }
   deleteSettingRow(key: string) { this.prep('DELETE FROM settings WHERE key = ?').run(key); }
   countSettings(): number { return (this.prep('SELECT COUNT(*) c FROM settings').get() as { c: number }).c; }
+
+  // ---- automations (scheduled AI pipelines; JSON columns for steps/schedule/history) ----
+  listAutomationRows(): AutomationRow[] {
+    return this.prep(`SELECT id, name, description, enabled, steps, schedule,
+      next_run AS nextRun, last_run AS lastRun, history, created, updated
+      FROM automations ORDER BY created DESC`).all() as unknown as AutomationRow[];
+  }
+  getAutomationRow(id: string): AutomationRow | undefined {
+    return this.prep(`SELECT id, name, description, enabled, steps, schedule,
+      next_run AS nextRun, last_run AS lastRun, history, created, updated
+      FROM automations WHERE id = ?`).get(id) as AutomationRow | undefined;
+  }
+  upsertAutomationRow(a: AutomationRow) {
+    this.prep(`INSERT INTO automations (id, name, description, enabled, steps, schedule, next_run, last_run, history, created, updated)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET name = excluded.name, description = excluded.description,
+         enabled = excluded.enabled, steps = excluded.steps, schedule = excluded.schedule,
+         next_run = excluded.next_run, last_run = excluded.last_run, history = excluded.history,
+         created = excluded.created, updated = excluded.updated`)
+      .run(a.id, a.name, a.description, a.enabled, a.steps, a.schedule, a.nextRun, a.lastRun, a.history, a.created, a.updated);
+  }
+  deleteAutomationRow(id: string) { this.prep('DELETE FROM automations WHERE id = ?').run(id); }
+
+  // ---- collector runs (Apify history; newest first, pruned) ----
+  listCollectorRunRows(limit = 80): CollectorRunRow[] {
+    return this.prep(`SELECT id, platform, actor, ts, status, items, imported, error, note,
+      cost_usd AS costUsd FROM collector_runs ORDER BY ts DESC LIMIT ?`).all(limit) as unknown as CollectorRunRow[];
+  }
+  getCollectorRunRow(id: string): CollectorRunRow | undefined {
+    return this.prep(`SELECT id, platform, actor, ts, status, items, imported, error, note,
+      cost_usd AS costUsd FROM collector_runs WHERE id = ?`).get(id) as CollectorRunRow | undefined;
+  }
+  upsertCollectorRunRow(r: CollectorRunRow) {
+    this.prep(`INSERT INTO collector_runs (id, platform, actor, ts, status, items, imported, error, note, cost_usd)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET platform = excluded.platform, actor = excluded.actor, ts = excluded.ts,
+         status = excluded.status, items = excluded.items, imported = excluded.imported,
+         error = excluded.error, note = excluded.note, cost_usd = excluded.cost_usd`)
+      .run(r.id, r.platform, r.actor, r.ts, r.status, r.items, r.imported, r.error, r.note, r.costUsd);
+  }
+  /** Whitelisted partial update — undefined = leave unchanged, null = clear. */
+  patchCollectorRunRow(id: string, f: Partial<Omit<CollectorRunRow, 'id'>>) {
+    const cols: string[] = [], vals: any[] = [];
+    const put = (col: string, v: unknown) => { if (v !== undefined) { cols.push(`${col} = ?`); vals.push(v); } };
+    put('platform', f.platform); put('actor', f.actor); put('ts', f.ts); put('status', f.status);
+    put('items', f.items); put('imported', f.imported); put('error', f.error); put('note', f.note); put('cost_usd', f.costUsd);
+    if (!cols.length) return;
+    vals.push(id);
+    this.prep(`UPDATE collector_runs SET ${cols.join(', ')} WHERE id = ?`).run(...vals);
+  }
+  pruneCollectorRuns(keep = 80) {
+    this.prep('DELETE FROM collector_runs WHERE id NOT IN (SELECT id FROM collector_runs ORDER BY ts DESC LIMIT ?)').run(keep);
+  }
+
+  // ---- cache (small derived values; never authoritative) ----
+  getCacheEntry(key: string): string | null {
+    const r = this.prep('SELECT value FROM cache WHERE key = ?').get(key) as { value: string } | undefined;
+    return r?.value ?? null;
+  }
+  setCacheEntry(key: string, value: string) {
+    this.prep(`INSERT INTO cache (key, value, updated) VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated = excluded.updated`).run(key, value, Date.now());
+  }
+  deleteCacheEntry(key: string) { this.prep('DELETE FROM cache WHERE key = ?').run(key); }
 
   // ---- secrets (AES-256-GCM rows; encryption lives in lib/secrets.ts) ----
   getSecretRow(name: string): { ciphertext: string; iv: string; tag: string } | undefined {

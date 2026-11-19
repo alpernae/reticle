@@ -13,7 +13,7 @@ describe('migrations', () => {
       expect(runMigrations(db)).toBe(MIGRATION_VERSION);
 
       const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map(t => t.name);
-      expect(tables).toEqual(expect.arrayContaining(['posts', 'manual', 'meta', 'users', 'sessions', 'jobs', 'ai_runs', 'secrets']));
+      expect(tables).toEqual(expect.arrayContaining(['posts', 'manual', 'meta', 'users', 'sessions', 'jobs', 'ai_runs', 'secrets', 'settings', 'automations', 'collector_runs', 'cache']));
       expect(tables).not.toContain('accounts');
       expect(cols(db, 'posts')).toEqual(expect.arrayContaining([
         'views', 'aiCats', 'author', 'authorFollowers', 'shares', 'saves',

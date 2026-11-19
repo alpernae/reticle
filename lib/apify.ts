@@ -13,7 +13,7 @@
 // Private analytics — your own impressions per country, reach demographics —
 // are NOT obtainable through Apify; that needs an own-account importer later.
 import 'server-only';
-import { getStore, type PostRow } from './db';
+import { getStore, type PostRow, type CollectorRunRow } from './db';
 import { getSecret, setSecret, secretMask } from './secrets';
 import { readSetting, writeSetting } from './settings';
 import { importItems, isPlatform as isPlat, PLAT_LABEL as LABELS, type Platform } from './normalize';
@@ -92,7 +92,7 @@ export function saveConfig(next: ApifyConfig): ApifyConfig {
   return cur;
 }
 
-// ---------------- run history (meta 'apifyRuns', last 20) ----------------
+// ---------------- run history (collector_runs table, newest 80) ----------------
 export type ApifyRunRec = {
   id: string;
   platform: ApifyPlatform;
@@ -122,20 +122,58 @@ function localSpend(): number | null {
   return seen ? sum : null;
 }
 
-function readRuns(): ApifyRunRec[] {
-  try {
-    const a = JSON.parse(getStore().getMeta('apifyRuns') || '[]');
-    return Array.isArray(a) ? a : [];
-  } catch { return []; }
+function rowToRun(r: CollectorRunRow): ApifyRunRec {
+  let imported: ApifyRunRec['imported'] = null;
+  try { imported = r.imported ? JSON.parse(r.imported) : null; } catch {}
+  return {
+    id: r.id, platform: r.platform as ApifyPlatform, actor: r.actor, ts: r.ts, status: r.status,
+    items: r.items, imported, error: r.error, note: r.note ?? undefined, costUsd: r.costUsd,
+  };
 }
-function writeRuns(r: ApifyRunRec[]) { getStore().setMeta('apifyRuns', JSON.stringify(r.slice(0, 80))); } // deep scans add one run per account
+function runToRow(r: ApifyRunRec): CollectorRunRow {
+  return {
+    id: r.id, platform: r.platform, actor: r.actor, ts: r.ts, status: r.status, items: r.items,
+    imported: r.imported ? JSON.stringify(r.imported) : null,
+    error: r.error, note: r.note ?? null, costUsd: r.costUsd ?? null,
+  };
+}
+
+let migratedLegacy = false;
+/** One-time, idempotent move of meta.apifyRuns into the table. */
+function migrateLegacyRuns() {
+  if (migratedLegacy) return;
+  migratedLegacy = true;
+  const store = getStore();
+  const raw = store.getMeta('apifyRuns');
+  if (raw == null) return;
+  try {
+    const list = JSON.parse(raw);
+    if (Array.isArray(list)) for (const r of list as ApifyRunRec[]) {
+      if (!r?.id || store.getCollectorRunRow(r.id)) continue;
+      store.upsertCollectorRunRow(runToRow(r));
+    }
+    store.pruneCollectorRuns(80); // deep scans add one run per account
+  } catch {}
+  store.setMeta('apifyRuns', ''); // the table is authoritative now
+}
+
+function readRuns(): ApifyRunRec[] {
+  migrateLegacyRuns();
+  return getStore().listCollectorRunRows(80).map(rowToRun);
+}
 export function listRuns(): ApifyRunRec[] { return readRuns(); }
 function patchRun(id: string, patch: Partial<ApifyRunRec>) {
-  const runs = readRuns();
-  const i = runs.findIndex(r => r.id === id);
-  if (i < 0) return;
-  runs[i] = { ...runs[i], ...patch };
-  writeRuns(runs);
+  const row: Partial<Omit<CollectorRunRow, 'id'>> = {};
+  if (patch.platform !== undefined) row.platform = patch.platform;
+  if (patch.actor !== undefined) row.actor = patch.actor;
+  if (patch.ts !== undefined) row.ts = patch.ts;
+  if (patch.status !== undefined) row.status = patch.status;
+  if (patch.items !== undefined) row.items = patch.items;
+  if (patch.imported !== undefined) row.imported = patch.imported ? JSON.stringify(patch.imported) : null;
+  if (patch.error !== undefined) row.error = patch.error;
+  if (patch.note !== undefined) row.note = patch.note ?? null;
+  if (patch.costUsd !== undefined) row.costUsd = patch.costUsd ?? null;
+  getStore().patchCollectorRunRow(id, row);
 }
 
 export function readApifyStatus() {
@@ -352,7 +390,9 @@ async function startRun(token: string, platform: ApifyPlatform, actor: string, i
     id: run.id, platform, actor, ts: Date.now(),
     status: run.status || 'RUNNING', items: null, imported: null, error: null, ...(note ? { note } : {}),
   };
-  writeRuns([rec, ...readRuns()]);
+  const store = getStore();
+  store.upsertCollectorRunRow(runToRow(rec));
+  store.pruneCollectorRuns(80); // deep scans add one run per account
   return rec;
 }
 

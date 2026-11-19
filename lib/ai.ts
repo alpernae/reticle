@@ -18,6 +18,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { getStore } from './db';
 import { getSecret, setSecret } from './secrets';
 import { readSetting, writeSetting } from './settings';
+import { readCache, writeCache } from './cache';
 
 export type ProviderId = 'claude-cli' | 'anthropic' | 'opencode';
 export const PROVIDER_LABEL: Record<ProviderId, string> = {
@@ -192,11 +193,12 @@ export async function opencodeModels(): Promise<{ list: { id: string; label: str
     // first call may have to START the service — give it time
     const all = await Promise.race([listAllModels(), new Promise<never>((_, rej) => setTimeout(() => rej(new Error('OpenCode service did not answer in 20s')), 20_000))]);
     list = all.map(m => ({ id: `${m.providerID}::${m.id}`, label: `${m.providerID} / ${m.id}` }));
-    if (list.length) getStore().setMeta('opencodeModelList', JSON.stringify(list));
+    if (list.length) writeCache('opencodeModelList', list);
     else error = 'OpenCode returned no models — run `opencode auth login` to add a provider';
   } catch (e: any) {
     error = String(e?.message || e).slice(0, 160);
-    try { list = JSON.parse(getStore().getMeta('opencodeModelList') || '[]'); stale = list.length > 0; } catch {}
+    list = readCache('opencodeModelList', []);
+    stale = list.length > 0;
   }
   ocCache = { at: Date.now(), list, error, stale };
   return ocCache;

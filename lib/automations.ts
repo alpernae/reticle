@@ -15,7 +15,7 @@
 //
 // Stored as JSON in SQLite meta ('automations') — one user, a handful of rows.
 import 'server-only';
-import { getStore } from './db';
+import { getStore, type AutomationRow } from './db';
 import { tracked, type RunCtx } from './activity';
 import { smartAI } from './aichain';
 import { TOOLS } from './tools';
@@ -58,15 +58,61 @@ export const WORKERS: { key: WorkerKind; label: string; hint: string }[] = [
 ];
 
 // ---------------- storage ----------------
+// One row per automation in the `automations` table; steps/schedule/history are
+// JSON columns. Legacy meta.automations is moved over on first read.
 const KEY = 'automations';
-export function listAutomations(): Automation[] {
-  try { const v = JSON.parse(getStore().getMeta(KEY) || '[]'); return Array.isArray(v) ? v : []; } catch { return []; }
+
+function parseJson<T>(text: string, fallback: T): T {
+  try { return JSON.parse(text) as T; } catch { return fallback; }
 }
-function saveAll(list: Automation[]) { getStore().setMeta(KEY, JSON.stringify(list)); }
+function rowToAutomation(r: AutomationRow): Automation {
+  return {
+    id: r.id, name: r.name, description: r.description, enabled: !!r.enabled,
+    steps: parseJson<AutoStep[]>(r.steps, []),
+    schedule: parseJson<Schedule>(r.schedule, { type: 'manual' }),
+    nextRun: r.nextRun, lastRun: r.lastRun,
+    history: parseJson<AutoRunRec[]>(r.history, []),
+    created: r.created, updated: r.updated,
+  };
+}
+function automationToRow(a: Automation): AutomationRow {
+  return {
+    id: a.id, name: a.name, description: a.description, enabled: a.enabled ? 1 : 0,
+    steps: JSON.stringify(a.steps), schedule: JSON.stringify(a.schedule),
+    nextRun: a.nextRun, lastRun: a.lastRun, history: JSON.stringify(a.history),
+    created: a.created, updated: a.updated,
+  };
+}
+
+let migratedLegacy = false;
+/** One-time, idempotent move of meta.automations into the table. */
+function migrateLegacyAutomations() {
+  if (migratedLegacy) return;
+  migratedLegacy = true;
+  const store = getStore();
+  const raw = store.getMeta(KEY);
+  if (raw == null) return;
+  try {
+    const list = JSON.parse(raw);
+    if (Array.isArray(list)) for (const a of list as Automation[]) {
+      if (!a?.id || store.getAutomationRow(a.id)) continue;
+      store.upsertAutomationRow(automationToRow(a));
+    }
+  } catch {}
+  store.setMeta(KEY, ''); // the table is authoritative now
+}
+
+export function listAutomations(): Automation[] {
+  migrateLegacyAutomations();
+  return getStore().listAutomationRows().map(rowToAutomation);
+}
 function patch(id: string, fn: (a: Automation) => void) {
-  const list = listAutomations();
-  const a = list.find(x => x.id === id);
-  if (a) { fn(a); saveAll(list); }
+  migrateLegacyAutomations();
+  const row = getStore().getAutomationRow(id);
+  if (!row) return undefined;
+  const a = rowToAutomation(row);
+  fn(a);
+  getStore().upsertAutomationRow(automationToRow(a));
   return a;
 }
 
@@ -101,9 +147,10 @@ function sanitizeSchedule(s: Partial<Schedule> | undefined): Schedule {
 export { nextRunOf };
 
 export function saveAutomation(input: Partial<Automation>): Automation {
-  const list = listAutomations();
+  migrateLegacyAutomations();
   const now = Date.now();
-  const existing = input.id ? list.find(a => a.id === input.id) : undefined;
+  const existingRow = input.id ? getStore().getAutomationRow(input.id) : undefined;
+  const existing = existingRow ? rowToAutomation(existingRow) : undefined;
   const steps = (input.steps || existing?.steps || []).slice(0, 6).map((s, i) => sanitizeStep(s, i));
   if (!steps.length) throw new Error('Add at least one step.');
   const schedule = sanitizeSchedule(input.schedule || existing?.schedule);
@@ -118,10 +165,10 @@ export function saveAutomation(input: Partial<Automation>): Automation {
     history: existing?.history || [],
     created: existing?.created || now, updated: now,
   };
-  saveAll(existing ? list.map(x => (x.id === a.id ? a : x)) : [a, ...list]);
+  getStore().upsertAutomationRow(automationToRow(a));
   return a;
 }
-export function deleteAutomation(id: string) { saveAll(listAutomations().filter(a => a.id !== id)); }
+export function deleteAutomation(id: string) { migrateLegacyAutomations(); getStore().deleteAutomationRow(id); }
 export function setEnabled(id: string, on: boolean) {
   return patch(id, a => { a.enabled = on; a.nextRun = on ? nextRunOf(a.schedule, Date.now(), readTimezone()) : null; a.updated = Date.now(); });
 }
@@ -256,19 +303,17 @@ export async function runAutomation(id: string, trigger: 'schedule' | 'manual'):
 
 /** Called by the scheduler tick: start every due automation (not awaited). */
 export function runDue(now = Date.now()): string[] {
-  const list = listAutomations();
   const started: string[] = [];
-  for (const a of list) {
+  for (const a of listAutomations()) {
     if (!a.enabled || a.nextRun == null || a.nextRun > now || running().has(a.id)) continue;
     // move the schedule on BEFORE running, so a slow run is never started twice
     a.nextRun = a.schedule.type === 'once' ? null : nextRunOf(a.schedule, now, readTimezone());
     if (a.schedule.type === 'once') a.enabled = false;
+    a.updated = now;
+    getStore().upsertAutomationRow(automationToRow(a));
     started.push(a.id);
   }
-  if (started.length) {
-    saveAll(list);
-    for (const id of started) void runAutomation(id, 'schedule');
-  }
+  for (const id of started) void runAutomation(id, 'schedule');
   return started;
 }
 
