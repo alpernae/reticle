@@ -3,8 +3,7 @@
 **Status:** Proposed
 **Date:** 2026-11-17
 **Scope:** Backend only: runtime, data, background work, AI integration, collectors, security boundaries. UI/UX is out of scope.
-**Decision records:** [adr/](adr/) (ADR-001 … ADR-005; local LLM: ADR-006, ADR-007)
-**Companion:** [local-llm-design.md](local-llm-design.md): Ollama/DeepSeek-R1 provider and the fine-tuning loop
+**Decision records:** [adr/](adr/) (ADR-001 … ADR-005)
 
 ---
 
@@ -60,6 +59,7 @@ Nothing here adds a server, a container or a paid dependency.
 - Node 24 (`node:sqlite`), Next.js 16 App Router, Docker single container.
 - Solo maintainer: complexity budget is small, and every new moving part must pay for itself.
 - No telemetry and no external infrastructure (README: "keep it local-first").
+- **No local model runtime.** AI providers are Claude CLI, Claude API and OpenCode. The earlier Ollama / DeepSeek-R1 provider and fine-tuning plan was dropped on 2026-11-19 and must not be reintroduced as part of this work.
 
 ---
 
@@ -378,6 +378,8 @@ Main costs of the proposal: a migration (data moves out of `meta`), slightly mor
 | **4. Read model & push** | Derived post columns, baselines, `analytics_snapshot` rebuilt by a task. Page-scoped endpoints replace `/api/state`. Optional SSE `/api/events` to replace polling. Nightly backup task. `/api/health`. | F6, F7 | 3–4 days |
 
 Phases 0–2 are independent of each other's internals and can land in any order. Phase 3 depends on 1 (it needs migrations and `tx()`). Phase 4's snapshot rebuild runs best as a task (phase 3), but it can start as a synchronous rebuild at the end of each ingest.
+
+**Status (2026-11-19):** Phase 0 is implemented. `importNormalized` runs in one `BEGIN IMMEDIATE` transaction; the scheduler tick polls active Apify runs; the time zone is stored in `meta` and drives `nextRunOf`, hour histograms, pattern time buckets, recommendations and the usage day boundary; startup no longer re-enables OpenCode. `npm run typecheck`, `npm test` (43 tests) and `npm run build` pass. Phase 1 is next.
 
 ---
 
