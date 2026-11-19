@@ -7,6 +7,8 @@ let db: typeof import('../db');
 let automations: typeof import('../automations');
 let apify: typeof import('../apify');
 let cache: typeof import('../cache');
+let ai: typeof import('../ai');
+let appState: typeof import('../app-state');
 
 beforeAll(async () => {
   process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'reticle-operational-'));
@@ -14,6 +16,8 @@ beforeAll(async () => {
   automations = await import('../automations');
   apify = await import('../apify');
   cache = await import('../cache');
+  ai = await import('../ai');
+  appState = await import('../app-state');
 });
 
 describe('automations table', () => {
@@ -105,5 +109,45 @@ describe('cache table', () => {
     expect(cache.readCache('price:x', null)).toEqual({ perResult: 0.1 });
     cache.dropCache('price:x');
     expect(cache.readCache('price:x', 'fallback')).toBe('fallback');
+  });
+});
+
+describe('provider health table', () => {
+  it('moves the legacy latency and status blobs into rows once', () => {
+    const store = db.getStore();
+    store.setMeta('aiLatency', JSON.stringify({ 'anthropic|m1': 1200 }));
+    store.setMeta('aiModelStatus', JSON.stringify({
+      'anthropic|m1': { ok: true, msg: 'answered', ts: 10 },
+      'opencode|x': { ok: false, msg: 'quota', ts: 20, retryAt: 30 },
+    }));
+
+    expect(ai.readLatency()).toEqual({ 'anthropic|m1': 1200 });
+    expect(store.getMeta('aiLatency')).toBe('');
+
+    const status = ai.readModelStatus();
+    expect(status['anthropic|m1']).toEqual({ ok: true, msg: 'answered', ts: 10 });
+    expect(status['opencode|x']).toMatchObject({ ok: false, msg: 'quota', retryAt: 30 });
+    expect(store.getMeta('aiModelStatus')).toBe('');
+    expect(store.getProviderHealthRow('anthropic|m1')).toMatchObject({ ok: 1, latencyMs: 1200 });
+  });
+
+  it('records latency without clobbering status', () => {
+    const store = db.getStore();
+    store.setProviderLatency('anthropic|m1', 800);
+    expect(store.getProviderHealthRow('anthropic|m1')).toMatchObject({ ok: 1, msg: 'answered', latencyMs: 800 });
+  });
+});
+
+describe('app state table', () => {
+  it('moves legacy markers out of meta and round-trips JSON', () => {
+    const store = db.getStore();
+    store.setMeta('lastAI', JSON.stringify({ ok: true, message: 'done', ts: 5 }));
+
+    expect(appState.readState('lastAI', null)).toEqual({ ok: true, message: 'done', ts: 5 });
+    expect(store.getMeta('lastAI')).toBe('');
+
+    appState.writeState('lastAnalysis', { text: 'x' });
+    expect(appState.readState('lastAnalysis', null)).toEqual({ text: 'x' });
+    expect(store.getAppState('lastAnalysis')).toBe('{"text":"x"}');
   });
 });

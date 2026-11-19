@@ -5,7 +5,7 @@
 // by design (how else would anyone sign in?).
 import { NextRequest, NextResponse } from 'next/server';
 import { COOKIE, sessionUser } from '@/lib/auth';
-import { getStore } from '@/lib/db';
+import { readStateRaw } from '@/lib/app-state';
 
 export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
@@ -16,7 +16,7 @@ export function proxy(req: NextRequest) {
   // the server's own automation scheduler (lib/startup.ts) carries a key stored in SQLite
   if (pathname === '/api/automations/tick' && req.method === 'POST') {
     const key = req.headers.get('x-payload-scheduler') || '';
-    const want = getStore().getMeta('schedulerKey') || '';
+    const want = readStateRaw('schedulerKey') || '';
     if (authed || (want.length >= 32 && key === want)) return NextResponse.next();
     return NextResponse.json({ error: 'Not signed in.' }, { status: 401 });
   }

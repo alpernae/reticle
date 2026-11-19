@@ -51,13 +51,8 @@ export function startScheduler() {
   };
 
   void (async () => {
-    const { getStore } = await import('./db');
-    const store = getStore();
-    let key = store.getMeta('schedulerKey') || '';
-    if (key.length < 32) {
-      key = Array.from(crypto.getRandomValues(new Uint8Array(24)), b => b.toString(16).padStart(2, '0')).join('');
-      store.setMeta('schedulerKey', key);
-    }
+    const { schedulerKey } = await import('./automations');
+    const key = schedulerKey();
     const port = process.env.PORT || '3000';
     const tick = () => {
       void pollApify();

@@ -4,6 +4,7 @@
 // whatever is already in SQLite.
 import 'server-only';
 import { getStore, type PostRow } from './db';
+import { readState, writeState } from './app-state';
 import { analyze, patternLibrary, patternTable, winners, winnerCard } from './patterns';
 import { findRecycled, recycledText } from './recycle';
 import { geoRegions } from './geo';
@@ -43,10 +44,10 @@ function load(): DB {
     aiCats: r.aiCats ? safeTopics(r.aiCats) : undefined,
   }));
   let lastCollect: DB['lastCollect'] = null, lastAI: AIStatus = null, lastGoodModel: DB['lastGoodModel'] = null, lastAnalysis: AIAnalysis = null;
-  try { const v = db.getMeta('lastCollect'); if (v) lastCollect = JSON.parse(v); } catch {}
-  try { const v = db.getMeta('lastAI'); if (v) lastAI = JSON.parse(v); } catch {}
-  try { const v = db.getMeta('lastGoodModel'); if (v) lastGoodModel = JSON.parse(v); } catch {}
-  try { const v = db.getMeta('lastAnalysis'); if (v) lastAnalysis = JSON.parse(v); } catch {}
+  lastCollect = readState<DB['lastCollect']>('lastCollect', null);
+  lastAI = readState<AIStatus>('lastAI', null);
+  lastGoodModel = readState<DB['lastGoodModel']>('lastGoodModel', null);
+  lastAnalysis = readState<AIAnalysis>('lastAnalysis', null);
   return { posts, manual: db.allManual(), lastCollect, lastAI, lastGoodModel, lastAnalysis };
 }
 function safeTopics(s: string): string[] { try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch { return []; } }
@@ -304,15 +305,15 @@ export function delManual(id: string) {
 }
 
 export function markAI(ok: boolean, message: string) {
-  getStore().setMeta('lastAI', JSON.stringify({ ok, message, ts: Date.now() }));
+  writeState('lastAI', { ok, message, ts: Date.now() });
 }
 
 export function markGoodModel(m: { providerID: string; id: string } | null) {
-  getStore().setMeta('lastGoodModel', JSON.stringify(m));
+  writeState('lastGoodModel', m);
 }
 
 export function markAnalysis(a: NonNullable<AIAnalysis>) {
-  getStore().setMeta('lastAnalysis', JSON.stringify(a));
+  writeState('lastAnalysis', a);
 }
 
 // ---------------- platform formats & fallback skeletons ----------------

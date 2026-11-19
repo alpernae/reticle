@@ -9,10 +9,11 @@ import * as initial from './migrations/001-initial';
 import * as secrets from './migrations/002-secrets';
 import * as settings from './migrations/003-settings';
 import * as operational from './migrations/004-operational';
+import * as providerHealth from './migrations/005-provider-health';
 
 export type Migration = { version: number; name: string; up(db: DatabaseSync): void };
 
-const MIGRATIONS: Migration[] = [initial, secrets, settings, operational];
+const MIGRATIONS: Migration[] = [initial, secrets, settings, operational, providerHealth];
 export const MIGRATION_VERSION = Math.max(...MIGRATIONS.map(m => m.version));
 
 /** Current PRAGMA user_version (0 = never migrated). */

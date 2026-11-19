@@ -45,6 +45,10 @@ export type CollectorRunRow = {
   id: string; platform: string; actor: string; ts: number; status: string;
   items: number | null; imported: string | null; error: string | null; note: string | null; costUsd: number | null;
 };
+export type ProviderHealthRow = {
+  key: string; ok: number | null; msg: string | null; ts: number | null;
+  retryAt: number | null; latencyMs: number | null;
+};
 
 /** Depth of the current transaction on this connection (SQLite has one). */
 let txDepth = 0;
@@ -221,6 +225,38 @@ export class SocialDB {
   }
   deleteCacheEntry(key: string) { this.prep('DELETE FROM cache WHERE key = ?').run(key); }
 
+  // ---- provider health (last outcome + latency per provider|model) ----
+  listProviderHealthRows(): ProviderHealthRow[] {
+    return this.prep(`SELECT key, ok, msg, ts, retry_at AS retryAt, latency_ms AS latencyMs
+      FROM provider_health`).all() as unknown as ProviderHealthRow[];
+  }
+  getProviderHealthRow(key: string): ProviderHealthRow | undefined {
+    return this.prep(`SELECT key, ok, msg, ts, retry_at AS retryAt, latency_ms AS latencyMs
+      FROM provider_health WHERE key = ?`).get(key) as ProviderHealthRow | undefined;
+  }
+  /** Status fields overwrite; a null latency keeps the measured value. */
+  upsertProviderHealthRow(r: ProviderHealthRow) {
+    this.prep(`INSERT INTO provider_health (key, ok, msg, ts, retry_at, latency_ms) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET ok = excluded.ok, msg = excluded.msg, ts = excluded.ts,
+         retry_at = excluded.retry_at, latency_ms = COALESCE(excluded.latency_ms, provider_health.latency_ms)`)
+      .run(r.key, r.ok, r.msg, r.ts, r.retryAt, r.latencyMs);
+  }
+  setProviderLatency(key: string, ms: number) {
+    this.prep(`INSERT INTO provider_health (key, latency_ms) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET latency_ms = excluded.latency_ms`).run(key, ms);
+  }
+
+  // ---- app state (last AI/analysis/collection markers, scheduler key) ----
+  getAppState(key: string): string | null {
+    const r = this.prep('SELECT value FROM app_state WHERE key = ?').get(key) as { value: string } | undefined;
+    return r?.value ?? null;
+  }
+  setAppState(key: string, value: string) {
+    this.prep(`INSERT INTO app_state (key, value, updated) VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated = excluded.updated`).run(key, value, Date.now());
+  }
+  deleteAppState(key: string) { this.prep('DELETE FROM app_state WHERE key = ?').run(key); }
+
   // ---- secrets (AES-256-GCM rows; encryption lives in lib/secrets.ts) ----
   getSecretRow(name: string): { ciphertext: string; iv: string; tag: string } | undefined {
     return this.prep('SELECT ciphertext, iv, tag FROM secrets WHERE name = ?').get(name) as
@@ -373,10 +409,10 @@ function importLegacyJson(db: DatabaseSync) {
     }
     const insManual = db.prepare('INSERT OR IGNORE INTO manual (id, platform, text, eng, "when", ts) VALUES (?, ?, ?, ?, ?, ?)');
     for (const m of raw.manual || []) insManual.run(m.id, m.platform || 'other', String(m.text || ''), m.eng || 0, m.when || '', m.ts || 0);
-    const setMeta = (k: string, v: unknown) => db.prepare('INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)').run(k, JSON.stringify(v));
-    if (raw.lastCollect) setMeta('lastCollect', raw.lastCollect);
-    if (raw.lastAI) setMeta('lastAI', raw.lastAI);
-    if (raw.lastGoodModel) setMeta('lastGoodModel', raw.lastGoodModel);
+    const setState = (k: string, v: unknown) => db.prepare('INSERT OR IGNORE INTO app_state (key, value) VALUES (?, ?)').run(k, JSON.stringify(v));
+    if (raw.lastCollect) setState('lastCollect', raw.lastCollect);
+    if (raw.lastAI) setState('lastAI', raw.lastAI);
+    if (raw.lastGoodModel) setState('lastGoodModel', raw.lastGoodModel);
     if ((raw.posts || []).length) console.info(`[reticle] migrated ${(raw.posts || []).length} posts from data.json → data.sqlite`);
   } catch { /* no data.json or unreadable — fresh install */ }
 
