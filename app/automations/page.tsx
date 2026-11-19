@@ -79,10 +79,11 @@ export default function Automations() {
   const [stepIx, setStepIx] = useState(0);
   const [saving, setSaving] = useState(false);
   const [now, setNow] = useState(0);
+  const [tz, setTz] = useState('');
 
   const load = useCallback(async () => {
     const j = await fetch('/api/automations').then(r => r.json()).catch(() => null);
-    if (j) { setList(j.automations || []); setCat(j.catalog); }
+    if (j) { setList(j.automations || []); setCat(j.catalog); setTz(j.timezone || ''); }
     return (j?.automations || []) as Auto[];
   }, []);
   useEffect(() => {
@@ -231,7 +232,7 @@ export default function Automations() {
               <StepEditor key={draft.steps[stepIx]?.id} i={stepIx} s={draft.steps[Math.min(stepIx, draft.steps.length - 1)]} count={draft.steps.length} cat={cat}
                 onChange={p => setStep(stepIx, p)} onMove={by => moveStep(stepIx, by)} onDelete={() => { delStep(stepIx); setStepIx(i => Math.max(0, i - 1)); }} />
               <div className="space-y-4">
-                <ScheduleEditor s={draft.schedule} enabled={draft.enabled} now={now} onChange={schedule => setDraft({ ...draft, schedule })} onEnabled={en => setDraft({ ...draft, enabled: en })} />
+                <ScheduleEditor s={draft.schedule} enabled={draft.enabled} now={now} tz={tz} onChange={schedule => setDraft({ ...draft, schedule })} onEnabled={en => setDraft({ ...draft, enabled: en })} />
                 {saved && <History items={saved.history} />}
               </div>
             </div>
@@ -379,8 +380,8 @@ function StepEditor({ i, s, count, cat, onChange, onMove, onDelete }: { i: numbe
 }
 
 // ---------------- schedule ----------------
-function ScheduleEditor({ s, enabled, now, onChange, onEnabled }: { s: Schedule; enabled: boolean; now: number; onChange: (s: Schedule) => void; onEnabled: (on: boolean) => void }) {
-  const next = enabled ? nextRunOf(s, now || undefined) : null;
+function ScheduleEditor({ s, enabled, now, tz, onChange, onEnabled }: { s: Schedule; enabled: boolean; now: number; tz: string; onChange: (s: Schedule) => void; onEnabled: (on: boolean) => void }) {
+  const next = enabled ? nextRunOf(s, now || undefined, tz || undefined) : null;
   const label = 'mb-1 block text-[11px] font-medium uppercase tracking-wide text-muted-foreground';
   const input = 'h-8 rounded-lg border border-border bg-background px-2.5 text-sm outline-none focus:border-foreground/40';
   return (

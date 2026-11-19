@@ -5,6 +5,8 @@
 // a measurable signal the panel already tracks (hooks, hours, medians, spikes).
 import 'server-only';
 import { allPayload, PLATFORM_HINTS, TOPICS, hourHistogram, type Post } from './engine';
+import { zonedParts } from './timezone';
+import { readTimezone } from './timezone-store';
 
 export type Rec = {
   id: string;
@@ -104,18 +106,19 @@ export function recommendations(opts: { topics: string[]; src: string }): RecsRe
       postedHour: null, security: false, dev: false,
     });
   }
+  const tz = readTimezone();
   for (const p of payload.posts as Post[]) {
     if (now - p.created > 30 * 864e5) continue;
     const g = p.score + 2 * p.comments;
     if (g <= 0) continue;
     if (chosen.length && !(p.topics || []).some(t => chosen.includes(t))) continue;
     if (!allowedOrigins(p.source)) continue;
-    const h = new Date(p.created);
+    const h = zonedParts(p.created, tz);
     cands.push({
       id: p.id, kind: 'public', origin: p.source, title: p.title, link: p.link || null,
       eng: g, score: p.score, comments: p.comments, topics: p.topics || [], ts: p.created,
-      whenLabel: `${months[h.getMonth()]} ${h.getDate()} · ${h.getHours() % 12 || 12}:${D(h.getMinutes())} ${h.getHours() < 12 ? 'AM' : 'PM'}`,
-      postedHour: h.getHours(), security: !!p.security, dev: !!p.dev,
+      whenLabel: `${months[h.month - 1]} ${h.day} · ${h.hour % 12 || 12}:${D(h.minute)} ${h.hour < 12 ? 'AM' : 'PM'}`,
+      postedHour: h.hour, security: !!p.security, dev: !!p.dev,
     });
   }
 

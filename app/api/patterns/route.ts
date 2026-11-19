@@ -3,6 +3,7 @@ import { allPayload } from '@/lib/engine';
 import { analyze, patternLibrary, winners, HOOK_LABEL } from '@/lib/patterns';
 import { findRecycled } from '@/lib/recycle';
 import { CATEGORIES, inCategory, categoryCounts } from '@/lib/categories';
+import { readTimezone } from '@/lib/timezone-store';
 
 /** GET ?platform=x&niche=1 — outlier winners + the pattern library (deterministic, no AI). */
 export async function GET(req: Request) {
@@ -11,7 +12,7 @@ export async function GET(req: Request) {
   const nicheOnly = u.searchParams.get('niche') === '1';
   const cat = u.searchParams.get('cat') || '';
   // outlier baselines are computed over ALL posts, then filtered — a category filter must not change what "normal" is for a creator
-  const all = analyze(allPayload().posts);
+  const all = analyze(allPayload().posts, readTimezone());
   const catCounts = categoryCounts(all.filter(r => !platform || r.source === platform));
   const rows = cat ? all.filter(r => inCategory(r, cat)) : all;
   const lib = patternLibrary(rows);

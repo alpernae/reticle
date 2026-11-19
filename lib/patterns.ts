@@ -13,6 +13,7 @@
 // compact winner cards + the pattern table instead of raw scraper JSON.
 import 'server-only';
 import type { Post } from './engine';
+import { hourInTz, systemTimezone, weekdayInTz } from './timezone';
 
 export type HookType =
   | 'question' | 'listicle' | 'contrarian' | 'story' | 'how-to' | 'launch'
@@ -67,7 +68,7 @@ const median = (a: number[]) => {
 };
 const EMOJI = /\p{Extended_Pictographic}/gu;
 
-export function analyze(posts: Post[]): Analyzed[] {
+export function analyze(posts: Post[], tz = systemTimezone()): Analyzed[] {
   const byAuthor = new Map<string, number[]>();
   const byPlat = new Map<string, number[]>();
   for (const p of posts) {
@@ -104,7 +105,6 @@ export function analyze(posts: Post[]): Analyzed[] {
     else if (pf && p.authorFollowers && p.authorFollowers >= 100) { outlier = eng / p.authorFollowers / pf; baseline = 'audience'; }
     else { outlier = eng / Math.max(1, platMed.get(p.source) ?? 1); baseline = 'platform'; }
     const words = body.split(/\s+/).filter(Boolean).length;
-    const d = new Date(p.created);
     return {
       ...p,
       eng,
@@ -117,8 +117,8 @@ export function analyze(posts: Post[]): Analyzed[] {
       lengthBucket: words < 40 ? 'short' : words < 150 ? 'medium' : 'long',
       hasLink: /https?:\/\//.test(body),
       emojiCount: (body.match(EMOJI) || []).length,
-      hour: d.getHours(),
-      weekday: d.getDay(),
+      hour: hourInTz(p.created, tz),
+      weekday: weekdayInTz(p.created, tz),
       niche: !!(p.security || p.dev),
     } as Analyzed;
   });

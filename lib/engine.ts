@@ -7,6 +7,8 @@ import { getStore, type PostRow } from './db';
 import { analyze, patternLibrary, patternTable, winners, winnerCard } from './patterns';
 import { findRecycled, recycledText } from './recycle';
 import { geoRegions } from './geo';
+import { hourInTz } from './timezone';
+import { readTimezone } from './timezone-store';
 
 export type Post = {
   id: string; source: string; title: string; text: string; url: string; link: string; score: number; comments: number; created: number;
@@ -148,7 +150,8 @@ export function hourHistogram(dbx: DB = load()) {
     thPer[src] = scores[Math.floor(scores.length * 0.8)] || 1;
   }
   const winners = rows.filter(p => p.score >= thPer[p.source]);
-  for (const p of winners) counts[new Date(p.created).getHours()]++;
+  const tz = readTimezone();
+  for (const p of winners) counts[hourInTz(p.created, tz)]++;
   return { counts, total: winners.length };
 }
 
@@ -184,7 +187,7 @@ export function analysisDigest(): Digest {
   const spikes = topicSpikes();
   const rising = spikes.filter(t => t.fresh || t.prev).slice(0, 8).map(t => ({ name: t.name, fresh: t.fresh, prev: t.prev, pct: t.pct }));
   const ha = hookStats().agg;
-  const rows = analyze(load().posts);
+  const rows = analyze(load().posts, readTimezone());
   const wins = winners(rows, { limit: 8 });
   return {
     total: db.count(),
@@ -244,7 +247,7 @@ export function allPayload() {
     hours: hourHistogram(d),
     // compact timing points for the Best-time card: source, created, outlier score
     ...(() => {
-      const rows = analyze(d.posts).filter(a => a.created);
+      const rows = analyze(d.posts, readTimezone()).filter(a => a.created);
       return {
         timing: rows.map(a => ({ s: a.source, t: a.created, o: a.outlier })),
         // post id → outlier score (the Feed shows it on every row)

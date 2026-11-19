@@ -2,6 +2,8 @@ import { NextResponse, connection } from 'next/server';
 import { getStore } from '@/lib/db';
 import { readModelStatus } from '@/lib/ai';
 import { spendInfo } from '@/lib/apify';
+import { zonedParts, zonedTimeToUtc } from '@/lib/timezone';
+import { readTimezone } from '@/lib/timezone-store';
 
 /**
  * GET → AI usage as Reticle itself records it (the sidebar Usage widget):
@@ -16,8 +18,10 @@ export async function GET() {
   await connection();
   const store = getStore();
   const runs = store.listRuns(1000);
-  const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
-  const today = runs.filter(r => r.created >= dayStart.getTime());
+  const tz = readTimezone();
+  const p = zonedParts(Date.now(), tz);
+  const dayStart = zonedTimeToUtc(p.year, p.month, p.day, 0, 0, tz);
+  const today = runs.filter(r => r.created >= dayStart);
   const week = runs.filter(r => r.created >= Date.now() - 7 * 864e5);
 
   const byProvider: Record<string, number> = {};

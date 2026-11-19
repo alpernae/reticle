@@ -4,6 +4,7 @@ import { cancelRun } from '@/lib/activity';
 import { TOOLS } from '@/lib/tools';
 import { agentCatalog } from '@/lib/jobs';
 import { FORMATS_BY_PLATFORM, FORMAT_PLAYBOOK } from '@/lib/playbook';
+import { readTimezone } from '@/lib/timezone-store';
 
 /** GET → automations (+ live "running" flag) and the catalog the builder needs. */
 export async function GET() {
@@ -11,6 +12,7 @@ export async function GET() {
   const autos = listAutomations().map(a => ({ ...a, running: isRunning(a.id) }));
   return NextResponse.json({
     automations: autos,
+    timezone: readTimezone(),
     catalog: {
       workers: WORKERS,
       tools: TOOLS.filter(t => !t.visual).map(t => ({ key: t.key, name: t.name, platforms: t.platforms, field: (t.fields.find(f => f.kind !== 'select') || t.fields[0])?.label || 'Input' })),

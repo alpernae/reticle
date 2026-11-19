@@ -1,21 +1,18 @@
 // lib/startup.ts — runs once when the Reticle server starts (see instrumentation.ts).
 //
-// OpenCode autostart: every server start re-enables OpenCode as a provider in
-// Auto mode (keeping your provider order) and starts the local OpenCode service
-// in the background, so its models are listed and ready without a first-use
-// delay. Set PAYLOAD_OPENCODE_AUTOSTART=false to turn this off.
-import { readAIConfig, saveAIConfig, opencodeModels } from './ai';
+// OpenCode autostart: if OpenCode is an enabled provider, start the local
+// OpenCode service in the background so its models are listed and ready without
+// a first-use delay. A boot never changes the user's provider settings: turning
+// OpenCode off stays off (finding F14). Set PAYLOAD_OPENCODE_AUTOSTART=false to
+// skip the service warm-up entirely.
+import { readAIConfig, opencodeModels } from './ai';
 
 export function onServerStart() {
   if (process.env.PAYLOAD_OPENCODE_AUTOSTART === 'false') return;
   try {
-    const cfg = readAIConfig();
-    if (!cfg.enabled.opencode) {
-      saveAIConfig({ enabled: { ...cfg.enabled, opencode: true } });
-      console.info('[payload] OpenCode enabled in Auto mode (server start)');
-    }
-  } catch (e) {
-    console.warn('[payload] could not enable OpenCode:', (e as Error).message);
+    if (!readAIConfig().enabled.opencode) return; // respect the saved setting
+  } catch {
+    return;
   }
   // don't block startup — the service can take a few seconds to come up
   void (async () => {
@@ -35,9 +32,24 @@ export function onServerStart() {
 // (lib/automations.ts → runDue). The call goes through the normal route, so
 // runs are recorded on Activity like anything you start by hand. The key that
 // lets it past the sign-in proxy lives only in this machine's SQLite.
+//
+// The same tick also polls active Apify runs, so a collector that finishes
+// while the Sources page is closed still imports its posts (finding F1).
 export function startScheduler() {
   const g = globalThis as unknown as { __payloadScheduler?: ReturnType<typeof setInterval> };
   if (g.__payloadScheduler) return; // dev reloads re-run instrumentation
+
+  let pollingApify = false;
+  const pollApify = async () => {
+    if (pollingApify) return; // a slow poll must not stack up behind the 30 s tick
+    pollingApify = true;
+    try {
+      const { pollActiveRuns } = await import('./apify');
+      await pollActiveRuns();
+    } catch { /* no token yet, or a transient Apify error — retried next tick */ }
+    finally { pollingApify = false; }
+  };
+
   void (async () => {
     const { getStore } = await import('./db');
     const store = getStore();
@@ -47,9 +59,12 @@ export function startScheduler() {
       store.setMeta('schedulerKey', key);
     }
     const port = process.env.PORT || '3000';
-    const tick = () => fetch(`http://127.0.0.1:${port}/api/automations/tick`, { method: 'POST', headers: { 'x-payload-scheduler': key } })
-      .then(r => r.json()).then(j => { if (j?.started?.length) console.info(`[payload] automations started: ${j.started.join(', ')}`); })
-      .catch(() => {}); // server still booting — next tick
+    const tick = () => {
+      void pollApify();
+      fetch(`http://127.0.0.1:${port}/api/automations/tick`, { method: 'POST', headers: { 'x-payload-scheduler': key } })
+        .then(r => r.json()).then(j => { if (j?.started?.length) console.info(`[payload] automations started: ${j.started.join(', ')}`); })
+        .catch(() => {}); // server still booting — next tick
+    };
     g.__payloadScheduler = setInterval(tick, 30_000);
     setTimeout(tick, 8_000);
   })();

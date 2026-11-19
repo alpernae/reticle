@@ -6,6 +6,7 @@ import { AUDIENCES, QUICK_FORMATS, type Tracker } from '@/lib/formats';
 import { allPayload } from '@/lib/engine';
 import { analyze, winners } from '@/lib/patterns';
 import { fitScorer } from '@/lib/score';
+import { readTimezone } from '@/lib/timezone-store';
 
 export const maxDuration = 200;
 
@@ -58,7 +59,7 @@ export async function POST(req: Request) {
         const count = Math.max(1, Math.min(10, Number(body.count) || 5));
         const platform = String(body.platform || 'x');
         // ground in real winners of the same shape when we have them
-        const rows = analyze(allPayload().posts);
+        const rows = analyze(allPayload().posts, readTimezone());
         const shape = rows.filter(r => r.words <= 30 && (f.key === 'poll' ? /\n\s*[-•]/.test(r.body || '') : f.key === 'convince' ? /convince me|change my mind/i.test(r.body || '') : r.hook === 'question' || r.hook === 'engagement-ask'));
         const ex = winners(shape, { limit: 5 }).map(w => `- "${(w.body || w.title).replace(/\s+/g, ' ').slice(0, 160)}" (${w.outlier}× vs creator's normal, @${w.author || '?'})`).join('\n');
         const prompt = `FORMAT: ${f.name}. ${f.brief}

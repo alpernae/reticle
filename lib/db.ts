@@ -36,9 +36,32 @@ export type AiRunRow = {
   provider: string; model: string; error: string; created: number; finished: number | null; ms: number | null;
 };
 
+/** Depth of the current transaction on this connection (SQLite has one). */
+let txDepth = 0;
+
 export class SocialDB {
   db: DatabaseSync;
   constructor(db: DatabaseSync) { this.db = db; }
+
+  // ---- transactions ----
+  /** Run `fn` inside one write transaction; nested calls join the outer one.
+   *  Rolls back and rethrows on error, so a failed import never leaves half a
+   *  dataset behind (and a 1,000-post import costs one commit, not 3,000). */
+  tx<T>(fn: () => T): T {
+    if (txDepth > 0) return fn();
+    this.db.exec('BEGIN IMMEDIATE');
+    txDepth++;
+    try {
+      const out = fn();
+      this.db.exec('COMMIT');
+      return out;
+    } catch (e) {
+      try { this.db.exec('ROLLBACK'); } catch {}
+      throw e;
+    } finally {
+      txDepth--;
+    }
+  }
 
   // ---- posts ----
   upsertPost(p: PostRow) {

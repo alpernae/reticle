@@ -7,6 +7,7 @@ import { fitToLimit } from '@/lib/enforce';
 import { FORMATS_BY_PLATFORM, FORMAT_PLAYBOOK, type PlatformKey } from '@/lib/playbook';
 import { fitScorer } from '@/lib/score';
 import { findRecycled, recycledText } from '@/lib/recycle';
+import { readTimezone } from '@/lib/timezone-store';
 
 export const maxDuration = 300;
 
@@ -44,7 +45,7 @@ export async function POST(req: Request) {
     const platform = body.platform && PLATFORM_HINTS[body.platform] ? body.platform : 'x';
     const pf = PLATFORM_HINTS[platform];
     const info = allPayload();
-    const rows = analyze(info.posts);
+    const rows = analyze(info.posts, readTimezone());
     const lib = patternLibrary(rows);
     const topicName = body.topic || '';
     const inTopic = (a: Analyzed) => !topicName || !!a.topics?.includes(topicName);

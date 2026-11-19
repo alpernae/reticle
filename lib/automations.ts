@@ -22,6 +22,7 @@ import { TOOLS } from './tools';
 import { AGENTS } from './jobs';
 import { PLATFORM_HINTS, analysisDigest, digestText } from './engine';
 import { nextRunOf, type Schedule } from './schedule';
+import { readTimezone } from './timezone-store';
 
 export type WorkerKind = 'generate' | 'tool' | 'agent' | 'prompt' | 'collect';
 export type ModelRef = { providerID: string; id: string } | null;
@@ -112,7 +113,7 @@ export function saveAutomation(input: Partial<Automation>): Automation {
     name: clean(input.name ?? existing?.name, 80).trim() || 'Untitled automation',
     description: clean(input.description ?? existing?.description, 300),
     enabled, steps, schedule,
-    nextRun: enabled ? nextRunOf(schedule, now) : null,
+    nextRun: enabled ? nextRunOf(schedule, now, readTimezone()) : null,
     lastRun: existing?.lastRun ?? null,
     history: existing?.history || [],
     created: existing?.created || now, updated: now,
@@ -122,7 +123,7 @@ export function saveAutomation(input: Partial<Automation>): Automation {
 }
 export function deleteAutomation(id: string) { saveAll(listAutomations().filter(a => a.id !== id)); }
 export function setEnabled(id: string, on: boolean) {
-  return patch(id, a => { a.enabled = on; a.nextRun = on ? nextRunOf(a.schedule) : null; a.updated = Date.now(); });
+  return patch(id, a => { a.enabled = on; a.nextRun = on ? nextRunOf(a.schedule, Date.now(), readTimezone()) : null; a.updated = Date.now(); });
 }
 
 // ---------------- running ----------------
@@ -260,7 +261,7 @@ export function runDue(now = Date.now()): string[] {
   for (const a of list) {
     if (!a.enabled || a.nextRun == null || a.nextRun > now || running().has(a.id)) continue;
     // move the schedule on BEFORE running, so a slow run is never started twice
-    a.nextRun = a.schedule.type === 'once' ? null : nextRunOf(a.schedule, now);
+    a.nextRun = a.schedule.type === 'once' ? null : nextRunOf(a.schedule, now, readTimezone());
     if (a.schedule.type === 'once') a.enabled = false;
     started.push(a.id);
   }

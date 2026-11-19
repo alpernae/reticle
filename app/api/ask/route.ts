@@ -3,6 +3,7 @@ import { allPayload, analysisDigest, digestText } from '@/lib/engine';
 import { analyze } from '@/lib/patterns';
 import { smartAI } from '@/lib/aichain';
 import { tracked, RunCancelled } from '@/lib/activity';
+import { readTimezone } from '@/lib/timezone-store';
 
 export const maxDuration = 180;
 
@@ -19,7 +20,7 @@ export async function POST(req: Request) {
 
   // keyword match over collected posts, best breakouts first
   const words = q.toLowerCase().split(/[^a-z0-9#@+.]+/).filter(w => w.length > 2 && !STOP.has(w));
-  const rows = analyze(allPayload().posts);
+  const rows = analyze(allPayload().posts, readTimezone());
   const scored = rows.map(r => {
     const hay = `${r.title} ${r.body || ''} ${(r.topics || []).join(' ')} ${r.author || ''} ${r.source}`.toLowerCase();
     const hits = words.filter(w => hay.includes(w)).length;

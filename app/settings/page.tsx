@@ -4,7 +4,7 @@
 // locally. DB facts come from /api/settings; token writes go through /api/apify.
 import { useCallback, useEffect, useState } from 'react';
 import { Card, CardHead, Chip, PageHead, btn, btnPrimary, inputCls, labelCls } from '@/components/panel';
-import { Database, KeyRound, Info, ExternalLink } from 'lucide-react';
+import { Database, KeyRound, Info, ExternalLink, Globe } from 'lucide-react';
 import { AISettings } from '@/components/ai-settings';
 import { PlaybookEditor } from '@/components/playbook-editor';
 import { Spinner } from '@/components/panelui/spinner';
@@ -25,7 +25,8 @@ type ApifyStatus = {
   error?: string;
   runs: { id: string; platform: string; ts: number; status: string; imported: { added: number; updated: number; skipped: number } | null }[];
 };
-type Data = { db: DbStats; apify: ApifyStatus } | null;
+type TzInfo = { saved: string | null; current: string; detected: string; options: string[] };
+type Data = { db: DbStats; apify: ApifyStatus; timezone: TzInfo } | null;
 
 const kfmtBytes = (n: number) => (n >= 1e6 ? (n / 1e6).toFixed(1) + ' MB' : n >= 1e3 ? Math.round(n / 1e3) + ' KB' : n + ' B');
 const fmtN = (v: unknown) => (typeof v === 'number' && isFinite(v) ? v.toLocaleString('en-US') : '0');
@@ -35,9 +36,16 @@ export default function Settings() {
   const [tokenIn, setTokenIn] = useState('');
   const [tokMsg, setTokMsg] = useState<string | null>(null);
   const [busyTok, setBusyTok] = useState(false);
+  const [tzIn, setTzIn] = useState('');
+  const [tzMsg, setTzMsg] = useState<string | null>(null);
+  const [busyTz, setBusyTz] = useState(false);
 
   const load = useCallback(async () => {
-    try { setD(await (await fetch('/api/settings')).json()); } catch {}
+    try {
+      const j = await (await fetch('/api/settings')).json();
+      setD(j);
+      if (j?.timezone) setTzIn(j.timezone.saved || j.timezone.current);
+    } catch {}
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -61,6 +69,21 @@ export default function Settings() {
   };
 
   const db = d?.db;
+
+  const saveTz = async () => {
+    setBusyTz(true); setTzMsg(null);
+    try {
+      const r = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ timezone: tzIn.trim() }) });
+      const j = await r.json();
+      if (r.ok) {
+        setD(cur => (cur ? { ...cur, timezone: j.timezone } : cur));
+        setTzIn(j.timezone.saved || j.timezone.current);
+        setTzMsg('✓ saved — schedules and hour analytics now use ' + j.timezone.current);
+      } else setTzMsg('✗ ' + (j.error || 'could not save that zone'));
+    } catch (e: any) { setTzMsg('✗ ' + e.message); }
+    setBusyTz(false);
+  };
+  const browserTz = () => { try { setTzIn(Intl.DateTimeFormat().resolvedOptions().timeZone); } catch {} };
 
   return (
     <div className="space-y-4">
@@ -106,6 +129,46 @@ export default function Settings() {
           )}
           <p className="text-[11px] text-muted-foreground flex gap-1.5"><Info className="size-3.5 shrink-0 mt-0.5" aria-hidden="true" />
             The token is verified against Apify before being stored, and stored <b className="text-foreground">only</b> in the local SQLite <code className="font-mono">meta</code> table — never committed, never synced. Free plan: <b className="text-foreground">$5 usage credit every month</b> (resets, does not roll over); X/IG/LinkedIn actors are pay-per-result and maxItems caps each run.
+          </p>
+        </div>
+      </Card>
+
+      {/* ---- time zone ---- */}
+      <Card>
+        <CardHead
+          title="Time zone"
+          sub="Schedules and “best time to post” hours are wall-clock time in this zone — the Docker image runs in UTC by default"
+          right={d?.timezone ? <Chip tone="a">{d.timezone.current}</Chip> : <Chip tone="a">reading…</Chip>}
+        />
+        <div className="p-4 flex flex-wrap items-start gap-3">
+          <div className="flex-1 min-w-[260px]">
+            <label className={labelCls}>IANA time zone</label>
+            <input
+              className={selCls}
+              list="tz-options"
+              placeholder="Europe/Istanbul"
+              value={tzIn}
+              onChange={e => setTzIn(e.target.value)}
+            />
+            <datalist id="tz-options">
+              {(d?.timezone?.options || []).map(t => <option key={t} value={t} />)}
+            </datalist>
+          </div>
+          <div className="flex items-end gap-2 pt-[22px]">
+            <button onClick={browserTz} disabled={busyTz} className={btn + ' h-9 px-3 text-[13px]'}>Use browser zone</button>
+            <button onClick={saveTz} disabled={busyTz || !tzIn.trim()} className={btnPrimary}>
+              {busyTz ? <Spinner className="size-4" /> : <Globe className="size-4" aria-hidden="true" />}
+              {busyTz ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </div>
+        <div className="px-4 pb-4 space-y-1.5">
+          {tzMsg && <p className={`text-[12px] ${tzMsg.startsWith('✓') ? 'text-foreground' : 'text-muted-foreground'}`}>{tzMsg}</p>}
+          <p className="text-[12px] text-muted-foreground">
+            Active: <b className="text-foreground">{d?.timezone?.current || '—'}</b>{d?.timezone?.saved ? '' : ' (server default)'} · server default <code className="font-mono">{d?.timezone?.detected || '—'}</code>
+          </p>
+          <p className="text-[11px] text-muted-foreground flex gap-1.5"><Info className="size-3.5 shrink-0 mt-0.5" aria-hidden="true" />
+            Stored locally in <code className="font-mono">data.sqlite</code>. “Daily 09:00” means 09:00 here, even when the container runs in UTC.
           </p>
         </div>
       </Card>

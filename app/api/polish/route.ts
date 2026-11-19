@@ -6,6 +6,7 @@ import { analyze, patternLibrary, patternTable, winners, winnerCard } from '@/li
 import { fitScorer } from '@/lib/score';
 import { PLATFORM_LIMITS } from '@/lib/tools';
 import { fitToLimit } from '@/lib/enforce';
+import { readTimezone } from '@/lib/timezone-store';
 
 export const maxDuration = 200;
 
@@ -32,7 +33,7 @@ export async function POST(req: Request) {
       kind: 'refine', title: `Polish · ${platform} — ${instruction.replace(/\s+/g, ' ').slice(0, 60)}`, page: '', platform,
       input: { instruction, text: text.slice(0, 1500), brief: brief.slice(0, 1500) }, model: pinned,
     }, async run => {
-      const rows = analyze(allPayload().posts);
+      const rows = analyze(allPayload().posts, readTimezone());
       const mine = rows.filter(r => r.source === platform);
       const pool = mine.length >= 8 ? mine : rows;
       const lim = (PLATFORM_LIMITS as Record<string, { post: number; note: string }>)[platform];

@@ -9,6 +9,7 @@ import { tracked, RunCancelled } from '@/lib/activity';
 import { toolFormat } from '@/lib/playbook';
 import { checkReply, detectConstraint } from '@/lib/replies';
 import { fitToLimit, type LengthInfo } from '@/lib/enforce';
+import { readTimezone } from '@/lib/timezone-store';
 
 // tools whose items are posts with a hard platform limit (bios have their own, shown in the UI)
 const LIMITED = new Set(['caption', 'pinned', 'repurpose', 'replies']);
@@ -63,7 +64,7 @@ export async function POST(req: Request) {
           return { slides, ...meta };
         } catch { return { error: 'AI answer was not valid slide JSON — try again', raw: out.slice(0, 1500), ...meta }; }
       }
-      const fit = POSTABLE.has(tool.key) ? fitScorer(analyze(allPayload().posts), platform) : null;
+      const fit = POSTABLE.has(tool.key) ? fitScorer(analyze(allPayload().posts, readTimezone()), platform) : null;
       const ctx = { platform, format: toolFormat(tool.key, platform), role: tool.key };
       if (tool.output === 'single') {
         // threads: every post must fit; the app counts, the model shortens what's over
