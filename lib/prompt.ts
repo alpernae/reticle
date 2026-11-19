@@ -2,7 +2,7 @@
 // studio agents), whichever provider answers. It carries the owner's creator
 // profile (editable on Settings) so drafts sound like one consistent person.
 import 'server-only';
-import { getStore } from './db';
+import { readSetting, writeSetting } from './settings';
 import { BRAND } from './brand';
 import { FORMAT_PLAYBOOK, PLATFORM_PLAYBOOK, ROLE_PLAYBOOK, type PlatformKey, type PlaybookOverrides } from './playbook';
 
@@ -36,28 +36,27 @@ export const DEFAULT_PROFILE: CreatorProfile = {
 };
 
 export function readProfile(): CreatorProfile {
-  try { return { ...DEFAULT_PROFILE, ...JSON.parse(getStore().getMeta('creatorProfile') || '{}') }; }
-  catch { return { ...DEFAULT_PROFILE }; }
+  return { ...DEFAULT_PROFILE, ...readSetting<Partial<CreatorProfile>>('creatorProfile', {}) };
 }
 export function saveProfile(p: Partial<CreatorProfile>): CreatorProfile {
   const cur = readProfile();
   for (const k of Object.keys(DEFAULT_PROFILE) as (keyof CreatorProfile)[]) {
     if (typeof p[k] === 'string') cur[k] = String(p[k]).slice(0, 800);
   }
-  getStore().setMeta('creatorProfile', JSON.stringify(cur));
+  writeSetting('creatorProfile', cur);
   return cur;
 }
 
 // ---------------- playbook overrides (Settings → Playbook) ----------------
 export function readPlaybookOverrides(): PlaybookOverrides {
-  try { return JSON.parse(getStore().getMeta('playbook') || '{}'); } catch { return {}; }
+  return readSetting<PlaybookOverrides>('playbook', {});
 }
 export function savePlaybookOverride(kind: 'platforms' | 'formats' | 'roles' | 'voice', key: string, text: string | null): PlaybookOverrides {
   const o = readPlaybookOverrides();
   const bucket = { ...((o[kind] as Record<string, string>) || {}) };
   if (text == null || !text.trim()) delete bucket[key]; else bucket[key] = text.slice(0, 6000);
   (o as Record<string, unknown>)[kind] = bucket;
-  getStore().setMeta('playbook', JSON.stringify(o));
+  writeSetting('playbook', o);
   return o;
 }
 

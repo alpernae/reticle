@@ -2,6 +2,7 @@ import { NextResponse, connection } from 'next/server';
 import { getStore } from '@/lib/db';
 import { readModelStatus } from '@/lib/ai';
 import { spendInfo } from '@/lib/apify';
+import { readSetting } from '@/lib/settings';
 import { zonedParts, zonedTimeToUtc } from '@/lib/timezone';
 import { readTimezone } from '@/lib/timezone-store';
 
@@ -38,7 +39,7 @@ export async function GET() {
   const limited = oc.filter(([, v]) => !v.ok && v.retryAt && v.retryAt > Date.now());
   const soonest = limited.map(([, v]) => v.retryAt!).sort((a, b) => a - b)[0] ?? null;
 
-  const budgetRaw = Number(store.getMeta('aiDailyRunBudget'));
+  const budgetRaw = Number(readSetting<number>('aiDailyRunBudget', 0));
   const spend = await spendInfo().catch(() => null);
 
   return NextResponse.json({

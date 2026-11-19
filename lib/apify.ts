@@ -15,6 +15,7 @@
 import 'server-only';
 import { getStore, type PostRow } from './db';
 import { getSecret, setSecret, secretMask } from './secrets';
+import { readSetting, writeSetting } from './settings';
 import { importItems, isPlatform as isPlat, PLAT_LABEL as LABELS, type Platform } from './normalize';
 
 export type ApifyPlatform = Platform;
@@ -58,27 +59,23 @@ export async function verifyToken(token: string): Promise<{ ok: boolean; usernam
  *  reaches the limit, new runs are refused and still-running collector runs
  *  are aborted at the next poll. */
 export function readBudget(): number {
-  const n = Number(getStore().getMeta('apifyBudgetUsd'));
+  const n = Number(readSetting<number>('apifyBudgetUsd', 0));
   return isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : 0;
 }
 export function setBudget(usd: number) {
   const n = Math.min(50, Math.max(0, Math.round(Number(usd) * 100) / 100));
-  getStore().setMeta('apifyBudgetUsd', String(n || 0));
+  writeSetting('apifyBudgetUsd', n);
 }
 
 // ---------------- config ----------------
 export function readConfig(): ApifyConfig {
   const base = JSON.parse(JSON.stringify(DEFAULT_CONFIG)) as ApifyConfig;
-  const raw = getStore().getMeta('apifyConfig');
-  if (!raw) return base;
-  try {
-    const v = JSON.parse(raw);
-    for (const k of Object.keys(base) as ApifyPlatform[]) {
-      if (v[k]?.actor) base[k].actor = String(v[k].actor);
-      if (typeof v[k]?.maxItems === 'number') base[k].maxItems = v[k].maxItems;
-      if (typeof v[k]?.sources === 'string') base[k].sources = String(v[k].sources);
-    }
-  } catch {}
+  const v = readSetting<Record<string, any>>('apifyConfig', {});
+  for (const k of Object.keys(base) as ApifyPlatform[]) {
+    if (v[k]?.actor) base[k].actor = String(v[k].actor);
+    if (typeof v[k]?.maxItems === 'number') base[k].maxItems = v[k].maxItems;
+    if (typeof v[k]?.sources === 'string') base[k].sources = String(v[k].sources);
+  }
   return base;
 }
 
@@ -91,7 +88,7 @@ export function saveConfig(next: ApifyConfig): ApifyConfig {
     const sources = String(n.sources ?? cur[k].sources).slice(0, 1200);
     cur[k] = { actor: actor || DEFAULT_CONFIG[k].actor, maxItems, sources };
   }
-  getStore().setMeta('apifyConfig', JSON.stringify(cur));
+  writeSetting('apifyConfig', cur);
   return cur;
 }
 

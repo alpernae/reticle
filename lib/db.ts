@@ -135,6 +135,19 @@ export class SocialDB {
     this.prep('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
   }
 
+  // ---- settings (typed user configuration; JSON text) ----
+  getSettingRow(key: string): { value: string; version: number } | undefined {
+    return this.prep('SELECT value, version FROM settings WHERE key = ?').get(key) as
+      { value: string; version: number } | undefined;
+  }
+  setSettingRow(key: string, value: string, version = 1) {
+    this.prep(`INSERT INTO settings (key, value, version, updated) VALUES (?, ?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, version = excluded.version, updated = excluded.updated`)
+      .run(key, value, version, Date.now());
+  }
+  deleteSettingRow(key: string) { this.prep('DELETE FROM settings WHERE key = ?').run(key); }
+  countSettings(): number { return (this.prep('SELECT COUNT(*) c FROM settings').get() as { c: number }).c; }
+
   // ---- secrets (AES-256-GCM rows; encryption lives in lib/secrets.ts) ----
   getSecretRow(name: string): { ciphertext: string; iv: string; tag: string } | undefined {
     return this.prep('SELECT ciphertext, iv, tag FROM secrets WHERE name = ?').get(name) as

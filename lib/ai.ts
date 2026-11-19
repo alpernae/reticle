@@ -17,6 +17,7 @@ import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import { getStore } from './db';
 import { getSecret, setSecret } from './secrets';
+import { readSetting, writeSetting } from './settings';
 
 export type ProviderId = 'claude-cli' | 'anthropic' | 'opencode';
 export const PROVIDER_LABEL: Record<ProviderId, string> = {
@@ -48,7 +49,7 @@ const DEFAULT_AI: AIConfig = {
 export function readAIConfig(): AIConfig {
   const c: AIConfig = JSON.parse(JSON.stringify(DEFAULT_AI));
   try {
-    const v = JSON.parse(getStore().getMeta('aiConfig') || '{}');
+    const v = readSetting<Record<string, any>>('aiConfig', {});
     if (Array.isArray(v.order)) {
       const ok = v.order.filter((p: string) => p in PROVIDER_LABEL) as ProviderId[];
       c.order = [...new Set([...ok, ...DEFAULT_AI.order])];
@@ -64,7 +65,7 @@ export function readAIConfig(): AIConfig {
 }
 export function saveAIConfig(next: Partial<AIConfig>): AIConfig {
   const merged = { ...readAIConfig(), ...next };
-  getStore().setMeta('aiConfig', JSON.stringify(merged));
+  writeSetting('aiConfig', merged);
   return readAIConfig();
 }
 

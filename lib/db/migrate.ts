@@ -7,10 +7,11 @@
 import type { DatabaseSync } from 'node:sqlite';
 import * as initial from './migrations/001-initial';
 import * as secrets from './migrations/002-secrets';
+import * as settings from './migrations/003-settings';
 
 export type Migration = { version: number; name: string; up(db: DatabaseSync): void };
 
-const MIGRATIONS: Migration[] = [initial, secrets];
+const MIGRATIONS: Migration[] = [initial, secrets, settings];
 export const MIGRATION_VERSION = Math.max(...MIGRATIONS.map(m => m.version));
 
 /** Current PRAGMA user_version (0 = never migrated). */
