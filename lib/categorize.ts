@@ -34,12 +34,16 @@ OUTPUT: a JSON array only, no prose: [{"i":0,"c":["key"]}, ...] — one object p
   try { arr = JSON.parse(r.out.slice(r.out.indexOf('['), r.out.lastIndexOf(']') + 1)); } catch { return { done: 0, remaining: posts.length, error: 'AI answer was not valid JSON' }; }
   const store = getStore();
   let done = 0;
-  for (const o of arr) {
-    const p = batch[Number(o?.i)];
-    if (!p) continue;
-    const cats = (Array.isArray(o.c) ? o.c : []).map(String).filter(k => CATEGORY_KEYS.includes(k)).slice(0, 2);
-    store.setAiCats(p.id, cats); // [] = model looked and found no fit (won't be re-asked)
-    done++;
-  }
+  // one transaction for the whole batch (ADR-003): a crash halfway through
+  // leaves no half-categorized batch behind
+  store.tx(() => {
+    for (const o of arr) {
+      const p = batch[Number(o?.i)];
+      if (!p) continue;
+      const cats = (Array.isArray(o.c) ? o.c : []).map(String).filter(k => CATEGORY_KEYS.includes(k)).slice(0, 2);
+      store.setAiCats(p.id, cats); // [] = model looked and found no fit (won't be re-asked)
+      done++;
+    }
+  });
   return { done, remaining: Math.max(0, posts.length - done), via: r.model };
 }

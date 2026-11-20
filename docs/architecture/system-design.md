@@ -1,9 +1,9 @@
 # Reticle: Backend Architecture Review & Target System Design
 
-**Status:** Proposed
+**Status:** Implemented (phases 0–4 shipped on 2026-11-20)
 **Date:** 2026-11-17
 **Scope:** Backend only: runtime, data, background work, AI integration, collectors, security boundaries. UI/UX is out of scope.
-**Decision records:** [adr/](adr/) (ADR-001 … ADR-005)
+**Decision records:** [adr/](adr/) (ADR-001 … ADR-005 — 001, 002, 003, 004, 005 all Accepted)
 
 ---
 
@@ -96,25 +96,27 @@ Nothing here adds a server, a container or a paid dependency.
 
 Severity: 🔴 correctness or data loss · 🟠 reliability or performance · 🟡 maintainability.
 
-| # | Finding | Evidence | Sev |
-|---|---|---|---|
-| F1 | **Collector imports only happen on read.** Finished Apify runs are imported only when `GET /api/apify` or `GET /api/apify/run?id=` is called, which happens only while the Sources page is open. An automation's "Collect" step only *starts* a run, so scheduled collection never imports anything. | `app/api/apify/route.ts:10`, `lib/apify.ts:481`, `lib/automations.ts:190-194` | 🔴 |
-| F2 | **Schedules and time analytics use the server's local time.** `setHours()` and `getHours()` run in the process TZ, and the Docker image sets none (UTC), so "Daily 09:00" fires at 09:00 UTC. Best-hour histograms and pattern `time` buckets shift the same way. | `lib/schedule.ts:16`, `lib/patterns.ts:120`, `lib/engine.ts:151`, `Dockerfile` | 🔴 |
-| F3 | **Four separate execution models for long work** (`tracked()` runs, `jobs`, automations, Apify runs), each with its own state machine, cancel path and restart handling. Activity has to stitch two of them together (`jobToRun`). | `lib/activity.ts`, `lib/jobs.ts`, `lib/automations.ts`, `app/api/activity/route.ts:53` | 🟠 |
-| F4 | **Nothing resumes after a restart.** Live state (steps, pause flag, abort controller) lives in `globalThis` Maps and is copied into SQLite, so there are two sources of truth. On restart every in-flight run, job and automation becomes `interrupted`, including a 3-step workflow that finished 2 steps. | `lib/jobs.ts:21,199-207,287`, `lib/activity.ts:16,41` | 🟠 |
-| F5 | **Layering inversion.** The domain layer (`lib/automations.ts`) imports route handlers and builds fake `Request` objects. Generate's real logic (picking winners, building the prompt, parsing, fitting, scoring) lives in the route file. | `lib/automations.ts:159,170`, `app/api/generate/route.ts:27-147` | 🟡 |
-| F6 | **Analytics are recomputed in full, synchronously, several times per request.** `load()` = `SELECT *` over ≤6k posts plus JSON parsing. `analysisDigest()` calls it 4×. `/api/generate` calls `allPayload()` twice plus `topicSpikes()`. A workflow's `buildCtx` does about 7 loads. All of this is synchronous `node:sqlite` plus CPU work on the single event loop, so every other request (including auth in `proxy.ts`) waits. | `lib/engine.ts:25,181-203,238`, `app/api/generate/route.ts:46,60,132`, `lib/jobs.ts:39-54` | 🟠 |
-| F7 | **`/api/state` sends the whole database to the browser:** every post with its body, plus timing, outliers and geo, on each Overview reload. | `app/api/state/route.ts:8`, `lib/engine.ts:238-263` | 🟠 |
-| F8 | **`meta` is a junk drawer.** Over 22 keys: secrets (`apifyToken`, `anthropicKey`, `claudeOAuthToken`, `youtubeApiKey`) in plaintext next to config, an 80-entry run history, automations with embedded history, mind maps, latency, health and caches. Blobs are rewritten whole on every change. Nothing can be queried, indexed or validated. | `grep getMeta/setMeta`; `lib/apify.ts:130-144`, `lib/automations.ts:60-70` | 🟠 |
-| F9 | **Ad-hoc schema evolution.** `try { ALTER TABLE } catch {}`, `ensureColumns()` at module load, `ai_runs` created in two places, an unused `accounts` table, and legacy columns (`T`, `text` vs `body`, `score` = likes, `security`/`dev` flags). There is no schema version. | `lib/db.ts:232-235,264-268,300-316` | 🟡 |
-| F10 | **Imports are not transactional.** `upsertPost` runs 3 statements per post with autocommit. A 1,000-item import means about 3,000 WAL commits, and a crash leaves a partial import. | `lib/db.ts:44-60`, `lib/normalize.ts:313-339` | 🟠 |
-| F11 | **Auth lives only in `proxy.ts`.** No route verifies the session itself. Next 16 docs: Proxy is for *optimistic* checks and "should not be your only line of defense". Proxy also queries SQLite on every request including prefetches, and carries a scheduler-key bypass. The Docker image binds `0.0.0.0`. | `proxy.ts:12,17-23`; `node_modules/next/dist/docs/01-app/02-guides/authentication.md:1033,1121` | 🟠 |
-| F12 | **The scheduler calls itself over HTTP** (`fetch(127.0.0.1:PORT/…/tick)`) with a key stored in `meta`. This only works if PORT and the loopback match the bind address, and it is the only reason the proxy bypass exists. | `lib/startup.ts:50`, `proxy.ts:17-23` | 🟡 |
-| F13 | **No concurrency control on AI providers.** Every request can spawn its own `claude -p` subprocess. With parallel Generate, an automation and a workflow, N CLI processes compete for the same subscription quota. Every call also writes 4 `meta` keys (`aiLatency`, `aiModelStatus`, `lastAI`, `lastGoodModel`). | `lib/ai.ts:208-230,262-298`, `lib/aichain.ts:23-24` | 🟠 |
-| F14 | **Startup changes user config.** Every boot re-enables OpenCode, overriding a user who turned it off. | `lib/startup.ts:13-14` | 🟡 |
-| F15 | **No automated tests or typecheck script**, even though the domain modules are pure and easy to test. | `package.json` scripts | 🟡 |
+| # | Finding | Evidence | Sev | Status |
+|---|---|---|---|---|
+| F1 | **Collector imports only happen on read.** Finished Apify runs are imported only when `GET /api/apify` or `GET /api/apify/run?id=` is called, which happens only while the Sources page is open. An automation's "Collect" step only *starts* a run, so scheduled collection never imports anything. | `app/api/apify/route.ts:10`, `lib/apify.ts:481`, `lib/automations.ts:190-194` | 🔴 | ✅ closed |
+| F2 | **Schedules and time analytics use the server's local time.** `setHours()` and `getHours()` run in the process TZ, and the Docker image sets none (UTC), so "Daily 09:00" fires at 09:00 UTC. Best-hour histograms and pattern `time` buckets shift the same way. | `lib/schedule.ts:16`, `lib/patterns.ts:120`, `lib/engine.ts:151`, `Dockerfile` | 🔴 | ✅ closed |
+| F3 | **Four separate execution models for long work** (`tracked()` runs, `jobs`, automations, Apify runs), each with its own state machine, cancel path and restart handling. Activity has to stitch two of them together (`jobToRun`). | `lib/activity.ts`, `lib/jobs.ts`, `lib/automations.ts`, `app/api/activity/route.ts:53` | 🟠 | ✅ closed |
+| F4 | **Nothing resumes after a restart.** Live state (steps, pause flag, abort controller) lives in `globalThis` Maps and is copied into SQLite, so there are two sources of truth. On restart every in-flight run, job and automation becomes `interrupted`, including a 3-step workflow that finished 2 steps. | `lib/jobs.ts:21,199-207,287`, `lib/activity.ts:16,41` | 🟠 | ✅ closed |
+| F5 | **Layering inversion.** The domain layer (`lib/automations.ts`) imports route handlers and builds fake `Request` objects. Generate's real logic (picking winners, building the prompt, parsing, fitting, scoring) lives in the route file. | `lib/automations.ts:159,170`, `app/api/generate/route.ts:27-147` | 🟡 | ✅ closed |
+| F6 | **Analytics are recomputed in full, synchronously, several times per request.** `load()` = `SELECT *` over ≤6k posts plus JSON parsing. `analysisDigest()` calls it 4×. `/api/generate` calls `allPayload()` twice plus `topicSpikes()`. A workflow's `buildCtx` does about 7 loads. All of this is synchronous `node:sqlite` plus CPU work on the single event loop, so every other request (including auth in `proxy.ts`) waits. | `lib/engine.ts:25,181-203,238`, `app/api/generate/route.ts:46,60,132`, `lib/jobs.ts:39-54` | 🟠 | ✅ closed |
+| F7 | **`/api/state` sends the whole database to the browser:** every post with its body, plus timing, outliers and geo, on each Overview reload. | `app/api/state/route.ts:8`, `lib/engine.ts:238-263` | 🟠 | ✅ closed |
+| F8 | **`meta` is a junk drawer.** Over 22 keys: secrets (`apifyToken`, `anthropicKey`, `claudeOAuthToken`, `youtubeApiKey`) in plaintext next to config, an 80-entry run history, automations with embedded history, mind maps, latency, health and caches. Blobs are rewritten whole on every change. Nothing can be queried, indexed or validated. | `grep getMeta/setMeta`; `lib/apify.ts:130-144`, `lib/automations.ts:60-70` | 🟠 | ✅ closed |
+| F9 | **Ad-hoc schema evolution.** `try { ALTER TABLE } catch {}`, `ensureColumns()` at module load, `ai_runs` created in two places, an unused `accounts` table, and legacy columns (`T`, `text` vs `body`, `score` = likes, `security`/`dev` flags). There is no schema version. | `lib/db.ts:232-235,264-268,300-316` | 🟡 | ✅ closed |
+| F10 | **Imports are not transactional.** `upsertPost` runs 3 statements per post with autocommit. A 1,000-item import means about 3,000 WAL commits, and a crash leaves a partial import. | `lib/db.ts:44-60`, `lib/normalize.ts:313-339` | 🟠 | ✅ closed |
+| F11 | **Auth lives only in `proxy.ts`.** No route verifies the session itself. Next 16 docs: Proxy is for *optimistic* checks and "should not be your only line of defense". Proxy also queries SQLite on every request including prefetches, and carries a scheduler-key bypass. The Docker image binds `0.0.0.0`. | `proxy.ts:12,17-23`; `node_modules/next/dist/docs/01-app/02-guides/authentication.md:1033,1121` | 🟠 | ✅ closed |
+| F12 | **The scheduler calls itself over HTTP** (`fetch(127.0.0.1:PORT/…/tick)`) with a key stored in `meta`. This only works if PORT and the loopback match the bind address, and it is the only reason the proxy bypass exists. | `lib/startup.ts:50`, `proxy.ts:17-23` | 🟡 | ✅ closed |
+| F13 | **No concurrency control on AI providers.** Every request can spawn its own `claude -p` subprocess. With parallel Generate, an automation and a workflow, N CLI processes compete for the same subscription quota. Every call also writes 4 `meta` keys (`aiLatency`, `aiModelStatus`, `lastAI`, `lastGoodModel`). | `lib/ai.ts:208-230,262-298`, `lib/aichain.ts:23-24` | 🟠 | ✅ closed |
+| F14 | **Startup changes user config.** Every boot re-enables OpenCode, overriding a user who turned it off. | `lib/startup.ts:13-14` | 🟡 | ✅ closed |
+| F15 | **No automated tests or typecheck script**, even though the domain modules are pure and easy to test. | `package.json` scripts | 🟡 | ✅ closed |
 
 **What is already good and should be kept:** the provider-runner abstraction (`RUNNERS`), defensive normalizers, budget guards checked before spending, idempotent imports keyed by post id, `server-only` boundaries, and honest "stats-only" fallbacks when AI is down.
+
+**Status:** all fifteen findings are closed. Phases 0–4 in the migration plan below did the work; the status note at the end of this document says what landed where.
 
 ---
 
