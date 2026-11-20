@@ -27,11 +27,26 @@ export function onServerStart() {
   })();
 }
 
+// ---------------- task worker ----------------
+// The durable task worker (lib/runtime/worker.ts) claims queued tasks with a
+// lease, runs them, and recovers work whose owner died. It starts with the
+// server so scheduled collection and AI work progress without a page open.
+export async function startTaskWorker() {
+  try {
+    // imported lazily so the worker's dependencies (Apify, AI) are not pulled
+    // into every process that only needs the scheduler
+    const { startWorker } = await import('./runtime/worker');
+    startWorker();
+  } catch (e: any) {
+    console.warn('[task] worker did not start:', String(e?.message || e).slice(0, 200));
+  }
+}
+
 // ---------------- automation scheduler ----------------
 // Every 30 seconds the server asks itself to run any due automation
-// (lib/automations.ts → runDue). The call goes through the normal route, so
-// runs are recorded on Activity like anything you start by hand. The key that
-// lets it past the sign-in proxy lives only in this machine's SQLite.
+// (lib/automations.ts → runDue). The call is in-process — no HTTP hop, no
+// scheduler key — and the run is recorded on Activity like anything you start
+// by hand.
 //
 // The same tick also polls active Apify runs, so a collector that finishes
 // while the Sources page is closed still imports its posts (finding F1).

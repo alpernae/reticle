@@ -12,10 +12,11 @@ import * as operational from './migrations/004-operational';
 import * as providerHealth from './migrations/005-provider-health';
 import * as mindmaps from './migrations/006-mindmaps';
 import * as trackers from './migrations/007-trackers';
+import * as tasks from './migrations/008-tasks';
 
 export type Migration = { version: number; name: string; up(db: DatabaseSync): void };
 
-const MIGRATIONS: Migration[] = [initial, secrets, settings, operational, providerHealth, mindmaps, trackers];
+const MIGRATIONS: Migration[] = [initial, secrets, settings, operational, providerHealth, mindmaps, trackers, tasks];
 export const MIGRATION_VERSION = Math.max(...MIGRATIONS.map(m => m.version));
 
 /** Current PRAGMA user_version (0 = never migrated). */

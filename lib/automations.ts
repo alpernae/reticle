@@ -235,9 +235,20 @@ async function runStep(s: AutoStep, prompt: string, ctx: RunCtx): Promise<{ text
       throw new Error('the agent took longer than 20 minutes');
     }
     case 'collect': {
-      const { apifyStart } = await import('./apify');
-      const run = await apifyStart(s.platform as never);
-      return { text: `Started the ${PLATFORM_HINTS[s.platform]?.label || s.platform} collector (Apify run ${run.id}). New posts are imported when it finishes.` };
+      // The collector is a durable task: it starts the Apify run, keeps
+      // polling it in the background and imports the dataset when it finishes
+      // — even when the Sources page is closed (finding F1).
+      const { enqueueTask } = await import('./application/tasks');
+      const task = enqueueTask({
+        kind: 'collect',
+        input: { platform: s.platform },
+        title: `Collect ${PLATFORM_HINTS[s.platform]?.label || s.platform} posts`,
+        page: '/sources',
+        platform: s.platform,
+        trigger: 'automation',
+        maxAttempts: 3,
+      });
+      return { text: `Queued the ${PLATFORM_HINTS[s.platform]?.label || s.platform} collector (task ${task.id}). The new posts are imported when the run finishes — you can close this page.` };
     }
     default: {
       const data = s.withData ? `\n\nMY DATA (only use figures that appear here):\n${digestText(analysisDigest())}` : '';

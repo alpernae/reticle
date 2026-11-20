@@ -56,9 +56,27 @@ export type TrackerRow = {
   id: string; preset: string; name: string; project: string; startDate: string; totalDays: number;
   headline: string; hashtags: string; fields: string; values: string; log: string; created: number; updated: number;
 };
+export type TaskRow = {
+  id: string; kind: string; parentId: string | null; status: string;
+  input: string; output: string | null; error: string | null; checkpoint: string | null;
+  provider: string; model: string; attempts: number; maxAttempts: number;
+  runAfter: number; leaseUntil: number | null; cancelRequested: number;
+  title: string; page: string; platform: string; trigger: string;
+  created: number; started: number | null; finished: number | null;
+};
+export type TaskEventRow = {
+  taskId: string; seq: number; at: number; type: string; label: string | null; state: string | null; data: string | null;
+};
 
 /** Depth of the current transaction on this connection (SQLite has one). */
 let txDepth = 0;
+
+// The tasks table is selected with explicit aliases — snake_case columns come
+// back camelCased so the rest of the app never has to know the column names.
+const TASK_COLUMNS = `id, kind, parent_id AS parentId, status, input, output, error, checkpoint, provider, model,
+  attempts, max_attempts AS maxAttempts, run_after AS runAfter, lease_until AS leaseUntil,
+  cancel_requested AS cancelRequested, title, page, platform, trigger, created, started, finished`;
+const TASK_SELECT = `SELECT ${TASK_COLUMNS} FROM tasks`;
 
 export class SocialDB {
   db: DatabaseSync;
@@ -308,6 +326,89 @@ export class SocialDB {
     if (!keep.length) { this.prep('DELETE FROM trackers').run(); return; }
     const marks = keep.map(() => '?').join(',');
     this.prep(`DELETE FROM trackers WHERE id NOT IN (${marks})`).run(...keep);
+  }
+
+  // ---- tasks (the durable task system; one row per long-running job) ----
+  addTaskRow(t: TaskRow) {
+    this.prep(`INSERT INTO tasks (id, kind, parent_id, status, input, output, error, checkpoint, provider, model,
+      attempts, max_attempts, run_after, lease_until, cancel_requested, title, page, platform, trigger, created, started, finished)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(t.id, t.kind, t.parentId, t.status, t.input, t.output, t.error, t.checkpoint, t.provider, t.model,
+        t.attempts, t.maxAttempts, t.runAfter, t.leaseUntil, t.cancelRequested, t.title, t.page, t.platform, t.trigger,
+        t.created, t.started, t.finished);
+  }
+  getTaskRow(id: string): TaskRow | undefined {
+    return this.prep(`${TASK_SELECT} WHERE id = ?`).get(id) as TaskRow | undefined;
+  }
+  listTaskRows(opts: { kind?: string; status?: string; limit?: number } = {}): TaskRow[] {
+    const where: string[] = [];
+    const vals: any[] = [];
+    if (opts.kind) { where.push('kind = ?'); vals.push(opts.kind); }
+    if (opts.status) { where.push('status = ?'); vals.push(opts.status); }
+    const sql = `${TASK_SELECT}${where.length ? ' WHERE ' + where.join(' AND ') : ''} ORDER BY created DESC LIMIT ?`;
+    vals.push(Math.max(1, Math.min(1000, opts.limit ?? 100)));
+    return this.prep(sql).all(...vals) as unknown as TaskRow[];
+  }
+  /** Whitelisted partial update — undefined = leave unchanged, null = clear. */
+  patchTaskRow(id: string, f: Partial<Omit<TaskRow, 'id'>>) {
+    const cols: string[] = [], vals: any[] = [];
+    const put = (col: string, v: unknown) => { if (v !== undefined) { cols.push(`${col} = ?`); vals.push(v); } };
+    put('kind', f.kind); put('parent_id', f.parentId); put('status', f.status);
+    put('input', f.input); put('output', f.output); put('error', f.error); put('checkpoint', f.checkpoint);
+    put('provider', f.provider); put('model', f.model);
+    put('attempts', f.attempts); put('max_attempts', f.maxAttempts);
+    put('run_after', f.runAfter); put('lease_until', f.leaseUntil); put('cancel_requested', f.cancelRequested);
+    put('title', f.title); put('page', f.page); put('platform', f.platform); put('trigger', f.trigger);
+    put('created', f.created); put('started', f.started); put('finished', f.finished);
+    if (!cols.length) return;
+    vals.push(id);
+    this.prep(`UPDATE tasks SET ${cols.join(', ')} WHERE id = ?`).run(...vals);
+  }
+  /** Claim the next ready task: due, and of a kind the worker may run.
+   *  The UPDATE … RETURNING makes the claim atomic — two workers can never
+   *  take the same row. A task that was 'waiting' (a collect task polling
+   *  Apify) continues without spending an attempt: only a fresh run counts. */
+  claimNextTaskRow(now: number, leaseMs: number, kinds: string[]): TaskRow | undefined {
+    if (!kinds.length) return undefined;
+    const marks = kinds.map(() => '?').join(',');
+    const row = this.prep(
+      `UPDATE tasks SET status = 'running', lease_until = ?, attempts = attempts + CASE WHEN status = 'waiting' THEN 0 ELSE 1 END,
+         started = COALESCE(started, ?), finished = NULL
+       WHERE id = (SELECT id FROM tasks WHERE status IN ('queued', 'waiting') AND run_after <= ? AND kind IN (${marks})
+                   ORDER BY run_after ASC, created ASC LIMIT 1)
+       RETURNING ${TASK_COLUMNS}`)
+      .get(now + leaseMs, now, now, ...kinds);
+    return row as TaskRow | undefined;
+  }
+  /** Keep the lease alive while the handler runs. */
+  extendTaskLease(id: string, until: number) {
+    this.prep('UPDATE tasks SET lease_until = ? WHERE id = ?').run(until, id);
+  }
+  /** Recover work whose owner is gone: an expired lease, or a task started by
+   *  a previous server process (bootAt is this process's start time). */
+  recoverStaleTasks(now: number, bootAt: number): number {
+    return this.prep(
+      `UPDATE tasks SET status = 'queued', lease_until = NULL, error = 'recovered after the server restarted'
+       WHERE status = 'running' AND (lease_until IS NULL OR lease_until < ? OR started IS NULL OR started < ?)`)
+      .run(now, bootAt).changes as number;
+  }
+  deleteTaskRow(id: string) { this.prep('DELETE FROM tasks WHERE id = ?').run(id); }
+  /** Keep the newest `keep` finished tasks; queued/running ones are never pruned. */
+  pruneFinishedTasks(keep = 1000): number {
+    return this.prep(
+      `DELETE FROM tasks WHERE status IN ('done', 'failed', 'cancelled')
+         AND id NOT IN (SELECT id FROM tasks WHERE status IN ('done', 'failed', 'cancelled') ORDER BY created DESC LIMIT ?)`)
+      .run(keep).changes as number;
+  }
+  // ---- task events (the step log) ----
+  addTaskEventRow(e: { taskId: string; at: number; type: string; label?: string | null; state?: string | null; data?: string | null }) {
+    const seq = ((this.prep('SELECT COALESCE(MAX(seq), 0) + 1 s FROM task_events WHERE task_id = ?').get(e.taskId) as { s: number }).s);
+    this.prep('INSERT INTO task_events (task_id, seq, at, type, label, state, data) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(e.taskId, seq, e.at, e.type, e.label ?? null, e.state ?? null, e.data ?? null);
+  }
+  listTaskEventRows(taskId: string): TaskEventRow[] {
+    return this.prep('SELECT task_id AS taskId, seq, at, type, label, state, data FROM task_events WHERE task_id = ? ORDER BY seq ASC')
+      .all(taskId) as unknown as TaskEventRow[];
   }
 
   // ---- secrets (AES-256-GCM rows; encryption lives in lib/secrets.ts) ----

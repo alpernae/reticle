@@ -16,7 +16,7 @@ import 'server-only';
 import { getStore, type PostRow, type CollectorRunRow } from './db';
 import { getSecret, setSecret, secretMask } from './secrets';
 import { readSetting, writeSetting } from './settings';
-import { importItems, isPlatform as isPlat, PLAT_LABEL as LABELS, type Platform } from './normalize';
+import { importItems, isPlatform as isPlat, PLAT_LABEL as LABELS, type Platform, type ImportCounts } from './normalize';
 
 export type ApifyPlatform = Platform;
 export const PLAT_LABEL = LABELS;
@@ -446,8 +446,10 @@ function xRunsThisMonth(): number {
   return readRuns().filter(r => r.platform === 'x' && r.actor !== X_DEEP_ACTOR && monthKey(r.ts) === mk).length; // the demo cap only applies to the default X actor
 }
 
-/** Poll a run; when it has SUCCEEDED and not yet been imported, pull its dataset and import the posts. */
-export async function apifyPoll(runId: string): Promise<{ status: string; rec: ApifyRunRec | null }> {
+/** Poll a run's STATUS (no import). Returns the fresh status and the run record.
+ *  The collector task calls this on every wake-up; the Sources page calls it
+ *  through `apifyPoll`, which imports as soon as the run succeeded. */
+export async function apifyPollStatus(runId: string): Promise<{ status: string; rec: ApifyRunRec | null }> {
   const token = getApifyToken();
   if (!token) throw new Error('Apify token missing — reconnect on the Sources page.');
   const runs = readRuns();
@@ -474,6 +476,18 @@ export async function apifyPoll(runId: string): Promise<{ status: string; rec: A
       patchRun(runId, { error: `aborted — spend limit reached ($${s.spend.toFixed(2)} of $${s.limit.toFixed(2)} in this usage cycle)` });
     }
   }
+  return { status: run.status, rec: readRuns().find(r => r.id === runId) || null };
+}
+
+/** Download a finished run's dataset and import it into the posts table.
+ *  Idempotent — importItems refreshes posts it already has instead of
+ *  duplicating them, so a retried import is safe. Returns null when the run
+ *  was already imported. */
+export async function apifyIngest(runId: string): Promise<{ items: number; result: ImportCounts; note?: string } | null> {
+  const token = getApifyToken();
+  if (!token) throw new Error('Apify token missing — reconnect on the Sources page.');
+  const known = readRuns().find(r => r.id === runId);
+  if (!known) throw new Error('Unknown Apify run id');
 
   // Import once per run — except when a previous import recorded all-zero
   // counts with an unknown item total. That combination is the fingerprint of
@@ -481,33 +495,43 @@ export async function apifyPoll(runId: string): Promise<{ status: string; rec: A
   // so re-import: importItems is idempotent (hasPost → refresh, no dupes).
   const allZero = !!known.imported && known.imported.added + known.imported.updated + known.imported.skipped === 0;
   const poisoned = allZero && known.items == null;
-  if (run.status === 'SUCCEEDED' && (!known.imported || poisoned)) {
-    // /datasets/:id/items returns a BARE JSON array — areq's { data } unwrap
-    // would turn it into undefined, which is exactly how "0 new · 0 refreshed"
-    // happened while real items sat in Apify. Fetch it raw.
-    const res = await fetch(`${API}/datasets/${run.defaultDatasetId}/items?limit=1000&token=${encodeURIComponent(token)}`, { signal: AbortSignal.timeout(45000) });
-    const raw: unknown = await res.json().catch(() => null);
-    const items = Array.isArray(raw) ? raw : [];
-    const result = importItems(known.platform, items);
-    const empty = result.added + result.updated + result.skipped === 0;
-    let note: string | undefined;
-    const mock = items.length > 0 && items.every((i: any) => i?.type === 'mock_tweet' || i?.noResults);
-    if (mock) {
-      note = `${/^(deep|topic) scan/.test(known.note || '') ? known.note + ': ' : ''}no posts found — the actor returned placeholder rows (its minimum charge). Check the handle spelling, or the account posted nothing original in the window.`;
-    } else if (empty) {
-      note = known.platform === 'x' && xRunsThisMonth() >= 5
-        ? '0 items — the X free-plan demo allowance (5 runs/month per actor) looks used up; upgrade on Apify or wait for the monthly reset.'
-        : known.platform === 'linkedin'
-          ? '0 posts returned — LinkedIn throttles scrapes sometimes; re-run, or check that the first profile URL has recent posts.'
-          : '0 items returned — check the source list above, then re-run.';
-    } else if (result.added + result.updated === 0 && result.skipped > 0) {
-      note = `${result.skipped} item${result.skipped === 1 ? '' : 's'} dropped — retweets/replies or older than the collection window.`;
-    } else if (/^(deep|topic) scan/.test(known.note || '')) {
-      note = known.note; // keep the account label on deep-scan runs
-    }
-    patchRun(runId, { items: items.length, imported: result, error: null, ...(note ? { note } : {}) });
+  if (known.imported && !poisoned) return null;
+
+  // /datasets/:id/items returns a BARE JSON array — areq's { data } unwrap
+  // would turn it into undefined, which is exactly how "0 new · 0 refreshed"
+  // happened while real items sat in Apify. Fetch it raw.
+  const run = await areq<{ defaultDatasetId: string }>(`/actor-runs/${runId}`, token);
+  const res = await fetch(`${API}/datasets/${run.defaultDatasetId}/items?limit=1000&token=${encodeURIComponent(token)}`, { signal: AbortSignal.timeout(45000) });
+  const raw: unknown = await res.json().catch(() => null);
+  const items = Array.isArray(raw) ? raw : [];
+  const result = importItems(known.platform, items);
+  const empty = result.added + result.updated + result.skipped === 0;
+  let note: string | undefined;
+  const mock = items.length > 0 && items.every((i: any) => i?.type === 'mock_tweet' || i?.noResults);
+  if (mock) {
+    note = `${/^(deep|topic) scan/.test(known.note || '') ? known.note + ': ' : ''}no posts found — the actor returned placeholder rows (its minimum charge). Check the handle spelling, or the account posted nothing original in the window.`;
+  } else if (empty) {
+    note = known.platform === 'x' && xRunsThisMonth() >= 5
+      ? '0 items — the X free-plan demo allowance (5 runs/month per actor) looks used up; upgrade on Apify or wait for the monthly reset.'
+      : known.platform === 'linkedin'
+        ? '0 posts returned — LinkedIn throttles scrapes sometimes; re-run, or check that the first profile URL has recent posts.'
+        : '0 items returned — check the source list above, then re-run.';
+  } else if (result.added + result.updated === 0 && result.skipped > 0) {
+    note = `${result.skipped} item${result.skipped === 1 ? '' : 's'} dropped — retweets/replies or older than the collection window.`;
+  } else if (/^(deep|topic) scan/.test(known.note || '')) {
+    note = known.note; // keep the account label on deep-scan runs
   }
-  return { status: run.status, rec: readRuns().find(r => r.id === runId) || null };
+  patchRun(runId, { items: items.length, imported: result, error: null, ...(note ? { note } : {}) });
+  return { items: items.length, result, ...(note ? { note } : {}) };
+}
+
+/** Poll a run; when it has SUCCEEDED and not yet been imported, pull its dataset and import the posts. */
+export async function apifyPoll(runId: string): Promise<{ status: string; rec: ApifyRunRec | null }> {
+  const { status } = await apifyPollStatus(runId);
+  if (status === 'SUCCEEDED') {
+    try { await apifyIngest(runId); } catch { /* the import is retried on the next poll */ }
+  }
+  return { status, rec: readRuns().find(r => r.id === runId) || null };
 }
 
 /** Poll every run that is still active — or stuck — so collectors finish
