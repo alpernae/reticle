@@ -1,7 +1,8 @@
 # ADR-004: Materialized analytics read model, keyed by a data version
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-11-17
+**Accepted:** 2026-11-20
 **Deciders:** Maintainer (alpernae)
 
 ## Context
@@ -59,8 +60,74 @@ The read:write ratio is very high (pages poll every few seconds; data changes a 
 - **Revisit:** past about 50k posts, make baselines incremental (streaming medians or t-digest) instead of recomputing per affected author.
 
 ## Action Items
-1. [ ] Phase-0 stopgap: memoize `load()` / `analyze()` by a `data_version` counter.
-2. [ ] Migration: derived columns + baselines tables + `analytics_snapshot`.
-3. [ ] Derive at ingest, inside the import transaction; bump `data_version`.
-4. [ ] `analytics.rebuild` task (debounced) + 15-minute refresh; pass `tz` into hour bucketing.
-5. [ ] Page-scoped read endpoints; retire `/api/state`.
+1. [x] Phase-0 stopgap: memoize `load()` / `analyze()` by a `data_version` counter.
+2. [x] Migration: derived columns + baselines tables + `analytics_snapshot`.
+3. [x] Derive at ingest, inside the import transaction; bump `data_version`.
+4. [x] `analytics.rebuild` task (debounced) + 15-minute refresh; pass `tz` into hour bucketing.
+5. [x] Page-scoped read endpoints; retire `/api/state`.
+
+## Implementation Notes (2026-11-20)
+
+The decision landed as written, with four deviations worth recording:
+
+- **The version counter lives in `app_state`, not `settings`.** `app_state` is
+  already the home of the operational markers, so a new key (`dataVersion`)
+  was cheaper than a second table of typed settings. It is read through
+  `lib/data-version.ts` (`dataVersion()`, `bumpDataVersion()`), which lives
+  in the infrastructure layer — the application layer must not be imported
+  from below it.
+- **The baselines are recomputed in full, not per affected author.** The ADR
+  proposed updating only the affected authors' baselines inside the import
+  transaction. That needs incremental medians, which is the thing this ADR
+  explicitly deferred ("revisit past about 50k posts"). At the current
+  corpus size (≤ 6,000 posts) a full recompute in the rebuild task is
+  simpler and exact. The *ingest* step still writes each post's derived
+  facts immediately, so the columns are never empty; only the outlier waits
+  for the rebuild, because it needs the yardsticks.
+- **One implementation of the yardsticks.** The analyzer and the read model
+  must not drift, so `computeBaselines()` and `outlierOf()` live in
+  `lib/domain/patterns.ts` and both sides call them. The rebuild test
+  asserts that the materialized pattern library equals the live one.
+- **The snapshot is not a cache of "everything the AI saw" — it is the
+  aggregate.** The digest text and the winner cards are still computed on
+  demand (they are prompt inputs, not page reads); the snapshot holds the
+  pattern library, topic spikes, hook stats, hour histogram and geo. The
+  Overview's KPIs, day buckets and counts come from the derived columns and
+  indexed queries instead.
+
+### What landed
+
+| Piece | Where |
+|---|---|
+| Migration 010 — derived columns, baselines, snapshot | `lib/db/migrations/010-analytics.ts` |
+| Version counter | `lib/data-version.ts` (`app_state.dataVersion`) |
+| Snapshot reader (single row, stale-checked) | `lib/analytics-read.ts` |
+| Rebuild + debounced scheduling | `lib/application/analytics.ts` |
+| Ingest-time derivation | `lib/derive-post.ts` (called from `lib/normalize.ts`) |
+| Shared yardsticks | `lib/domain/patterns.ts` (`computeBaselines`, `outlierOf`) |
+| Task kind `analytics` | `lib/application/task-handlers.ts` |
+| 15-minute refresh | `lib/startup.ts` (scheduler tick) |
+| Page-scoped endpoints | `app/api/{overview,posts,best-time,summary,topics,patterns,manual}/route.ts` |
+| Read models | `lib/application/{overview,posts,best-time,patterns,topics}.ts` |
+
+`/api/state` is gone (404). The whole corpus no longer leaves the server
+unless a page asks for a post by name.
+
+### Verification
+
+- `lib/__tests__/analytics.test.ts` — the derived columns, the outliers
+  (against the live analyzer), the baselines, the snapshot lifecycle and the
+  pattern-library agreement.
+- `lib/__tests__/reads.test.ts` — the Overview buckets, filters and search;
+  the Feed page, cursor, sorts and stats; the best-time points.
+- Live check (temp `DATA_DIR`, `next start`): the boot rebuild materialized
+  the columns, the baselines and the snapshot; every endpoint answered with
+  the expected numbers; `/api/state` returned 404.
+
+### Still open
+
+- **Phase 4e:** a nightly `VACUUM INTO` backup task, a `GET /api/health`
+  endpoint and an optional SSE `/api/events` to replace the remaining
+  polling. None of these depend on the read model.
+- **Incremental baselines** past about 50k posts (see the consequences
+  section).
