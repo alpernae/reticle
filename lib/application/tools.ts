@@ -33,7 +33,7 @@ export type ToolInput = {
 const isPlat = (p: string): p is ToolPlatform => TOOL_PLATFORMS.some(x => x.key === p);
 
 /** Run one Toolkit tool and return its parsed result. */
-export async function runTool(body: ToolInput): Promise<UseCaseResult> {
+export async function runTool(body: ToolInput, opts: { signal?: AbortSignal } = {}): Promise<UseCaseResult> {
   const platform = String(body?.platform || '');
   if (!isPlat(platform)) return { status: 400, body: { error: 'platform must be instagram, x, linkedin or youtube' } };
   // Only the fields this tool defines are used and recorded — stray fields from another
@@ -54,7 +54,7 @@ export async function runTool(body: ToolInput): Promise<UseCaseResult> {
   try {
     const result = await tracked({
       kind: 'tool', title: `${tool.name} · ${platform}${topic ? ` — ${topic}` : ''}`, page: `/toolkit?p=${platform}&t=${tool.key}`,
-      platform, input: { tool: tool.key, ...input }, model: pinned,
+      platform, input: { tool: tool.key, ...input }, model: pinned, signal: opts.signal,
     }, async run => {
       run.step(`Asking ${pinned ? `${pinned.providerID} · ${pinned.id}` : 'the AI (auto provider)'}`);
       const r = await smartAI(built.prompt, 200000, pinned, run.signal, { platform, format: toolFormat(tool.key, platform), role: tool.key });

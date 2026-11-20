@@ -1,15 +1,29 @@
 // app/api/tools/route.ts — HTTP adapter for the Toolkit use case.
-// The use case itself lives in lib/application/tools.ts.
+//
+// The work itself is a durable task (kind "tool"): the route enqueues it and
+// waits for the worker to finish it. The response shape is unchanged.
 import { NextResponse } from 'next/server';
-import { runTool } from '@/lib/application/tools';
+import { enqueueTask, waitForTask } from '@/lib/application/tasks';
 import { route } from '@/lib/http/route';
 
 export const maxDuration = 240;
 
 const handler_POST = async (req: Request) => {
   const body = await req.json().catch(() => ({} as any));
-  const result = await runTool(body);
-  return NextResponse.json(result.body, { status: result.status });
+  const task = enqueueTask({
+    kind: 'tool',
+    input: body,
+    title: `Toolkit · ${String(body?.tool || 'tool')}`,
+    page: '/toolkit',
+    platform: String(body?.platform || ''),
+    trigger: 'api',
+  });
+  const done = await waitForTask(task.id, 225_000);
+  if (!done) return NextResponse.json({ error: 'the task disappeared' }, { status: 500 });
+  if (done.status === 'cancelled') return NextResponse.json({ error: 'cancelled' }, { status: 499 });
+  if (done.status !== 'done') return NextResponse.json({ error: done.error || 'the task failed', taskId: task.id }, { status: 500 });
+  const out = done.output as { status?: number; body?: any } | null;
+  return NextResponse.json(out?.body ?? {}, { status: out?.status ?? 200 });
 }
 
 export const POST = route(handler_POST);

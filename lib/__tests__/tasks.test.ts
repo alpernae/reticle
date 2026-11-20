@@ -218,4 +218,26 @@ describe('task queue', () => {
     expect(tasks.getTask(task.id)).toBeNull();
     expect(db.getStore().listTaskEventRows(task.id)).toHaveLength(0);
   });
+
+  it('knows every kind the API routes enqueue', () => {
+    expect(handlers.handlerKinds()).toEqual(expect.arrayContaining(['collect', 'ingest', 'generate', 'tool']));
+  });
+
+  it('lets an outside signal cancel a tracked run (the task → AI bridge)', async () => {
+    const activity = await import('../activity');
+    const ac = new AbortController();
+    const p = activity.tracked(
+      { kind: 'generate', title: 'cancel me', page: '/generate', signal: ac.signal },
+      async run => {
+        await new Promise(r => setTimeout(r, 200));
+        if (run.signal.aborted) throw new Error('aborted');
+        return { ok: true };
+      },
+    );
+    setTimeout(() => ac.abort(), 20);
+    await expect(p).rejects.toThrow();
+
+    const runs = db.getStore().listRuns(10);
+    expect(runs[0].status).toBe('cancelled');
+  });
 });

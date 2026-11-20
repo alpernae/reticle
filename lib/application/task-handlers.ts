@@ -101,8 +101,42 @@ const ingest: TaskHandler = {
   },
 };
 
+/**
+ * `generate` — the "3 grounded drafts" use case (lib/application/drafts.ts).
+ * The AI call runs in the worker, so the result belongs to the task even if
+ * the page that asked for it is closed.
+ */
+const generate: TaskHandler = {
+  resource: 'ai',
+  limit: 2,
+  async run(ctx: TaskCtx): Promise<TaskResult> {
+    const { generateDrafts } = await import('./drafts');
+    ctx.step('Building the prompt from your winners');
+    const res = await generateDrafts(ctx.input || {}, { signal: ctx.signal });
+    if (res.status !== 200) return { status: 'failed', error: String((res.body as any)?.error || `generate failed (${res.status})`) };
+    ctx.step('Done');
+    return { status: 'done', output: res };
+  },
+};
+
+/**
+ * `tool` — one Toolkit tool (lib/application/tools.ts).
+ */
+const tool: TaskHandler = {
+  resource: 'ai',
+  limit: 2,
+  async run(ctx: TaskCtx): Promise<TaskResult> {
+    const { runTool } = await import('./tools');
+    ctx.step('Asking the AI');
+    const res = await runTool(ctx.input || {}, { signal: ctx.signal });
+    if (res.status !== 200) return { status: 'failed', error: String((res.body as any)?.error || `tool failed (${res.status})`) };
+    ctx.step('Done');
+    return { status: 'done', output: res };
+  },
+};
+
 /** Every task kind the worker knows how to run. */
-export const HANDLERS: Record<string, TaskHandler> = { collect, ingest };
+export const HANDLERS: Record<string, TaskHandler> = { collect, ingest, generate, tool };
 
 /** Register (or replace) a task kind — new kinds plug in here. */
 export function registerHandler(kind: string, handler: TaskHandler) {

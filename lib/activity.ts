@@ -31,9 +31,13 @@ export class RunCancelled extends Error { constructor() { super('cancelled by us
  * Run `fn` as a tracked Activity run. Whatever `fn` returns is stored as the
  * run's output (JSON) and returned to the caller unchanged. Errors are stored
  * and re-thrown. `fn` should pass ctx.signal into smartAI so Cancel works.
+ *
+ * `meta.signal` is an optional outside signal: when it aborts, the run is
+ * aborted too. That is how a task cancels an AI call it started (the task
+ * worker owns the outer signal, the run owns the inner one).
  */
 export async function tracked<T>(
-  meta: { kind: RunKind; title: string; page: string; platform?: string; input?: unknown; model?: { providerID: string; id: string } | null },
+  meta: { kind: RunKind; title: string; page: string; platform?: string; input?: unknown; model?: { providerID: string; id: string } | null; signal?: AbortSignal },
   fn: (ctx: RunCtx) => Promise<T>,
   isFailure?: (out: T) => string | null,
 ): Promise<T & { runId: string }> {
@@ -43,6 +47,10 @@ export async function tracked<T>(
   const created = Date.now();
   const steps: RunStep[] = [{ label: 'Reading your data & building the prompt', at: created, state: 'active' }];
   const abort = new AbortController();
+  if (meta.signal) {
+    if (meta.signal.aborted) abort.abort();
+    else meta.signal.addEventListener('abort', () => abort.abort(), { once: true });
+  }
   live().set(id, { abort, steps });
   store.addRun({
     id, kind: meta.kind, title: String(meta.title || meta.kind).slice(0, 160), page: meta.page, platform: meta.platform || '',

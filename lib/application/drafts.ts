@@ -42,7 +42,7 @@ export async function pingAI(): Promise<UseCaseResult> {
 }
 
 /** Generate three platform-ready drafts grounded in the creator's own winners. */
-export async function generateDrafts(body: GenerateInput): Promise<UseCaseResult> {
+export async function generateDrafts(body: GenerateInput, opts: { signal?: AbortSignal } = {}): Promise<UseCaseResult> {
   if (body.mode === 'ping') return pingAI();
 
   const pinned = body.model?.providerID && body.model?.id ? body.model : null;
@@ -52,7 +52,7 @@ export async function generateDrafts(body: GenerateInput): Promise<UseCaseResult
   const formatLabel = formatKey ? FORMAT_PLAYBOOK[formatKey].label : '';
   const title = `${PLATFORM_HINTS[platformKey].label}${formatLabel ? ' · ' + formatLabel : ''} — ${(body.idea || body.topic || 'your pillars').replace(/\s+/g, ' ').slice(0, 70)}`;
   try {
-    const result = await tracked({ kind: 'generate', title, page: '/generate', platform: platformKey, input: body, model: pinned }, async run => {
+    const result = await tracked({ kind: 'generate', title, page: '/generate', platform: platformKey, input: body, model: pinned, signal: opts.signal }, async run => {
       const platform = body.platform && PLATFORM_HINTS[body.platform] ? body.platform : 'x';
       const pf = PLATFORM_HINTS[platform];
       const info = allPayload();
