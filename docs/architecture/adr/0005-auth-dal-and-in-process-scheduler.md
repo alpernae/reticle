@@ -1,6 +1,6 @@
 # ADR-005: Session checks in a data-access layer, an optimistic proxy, and an in-process scheduler
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-11-17
 **Deciders:** Maintainer (alpernae)
 
@@ -21,6 +21,19 @@
 3. **In-process scheduler.** `runtime/scheduler.ts` starts one `setInterval(30 s)` (guarded against dev hot-reload duplicates) that calls `automations.runDue(now, tz)` directly. `runDue` enqueues `automation` tasks ([ADR-001](0001-durable-task-system.md)). The tick endpoint, `schedulerKey` and the proxy bypass are deleted. A manual "run now" is a normal authenticated `POST /api/automations/:id/run`.
 4. **Explicit timezone.** `settings.timezone` (IANA name) is captured from the browser on first sign-in and editable in Settings, with `process.env.TZ` and then `UTC` as fallbacks. `nextRunOf(schedule, from, tz)` and every hour or weekday bucket compute wall-clock time with `Intl.DateTimeFormat({ timeZone })`, handling DST through the formatter rather than with `setHours`.
 5. **Rate-limit sign-in.** A small in-memory counter (for example 5 failures per 15 min per IP) on `POST /api/auth`, because the app may be reachable on a LAN.
+
+## Implementation notes (2026-11-20)
+
+Landed in commit `4c4f1c2` (plus the Phase 0 timezone work in `bd2b62b`):
+
+1. **`lib/http/route.ts`** exports `route(handler)`. It resolves the session through `lib/auth.ts` → `requestUser(req)` (cookie → `sessions` table → user), passes Next's `{ params }` context through, and maps a thrown `HttpError` to its status or anything else to a 500 with a stable `{ error }` body. The signature is `route(async (req, user, ...rest) => …)`.
+2. **All 25 protected route files are wrapped**; only `/api/auth/*` stays open (it is how anyone signs in). The tick route is gone, so 26 route files remain.
+3. **`proxy.ts` is optimistic**: `/api/*` passes through untouched (each route enforces its own session), page visits redirect to `/login`, and `/login` redirects back when already signed in. The scheduler-key bypass is deleted.
+4. **The scheduler runs in-process**: `lib/startup.ts` calls `runDue()` directly every 30 s (guarded against dev hot-reload duplicates) and polls active Apify runs in the same tick. `/api/automations/tick` and `schedulerKey` are deleted; the stale key is cleared from `app_state`/`meta` on the next boot.
+5. **Timezone is explicit**: `settings.timezone` (IANA) is stored in the settings table, `nextRunOf(schedule, from, tz)` and every hour/weekday bucket compute wall-clock time through `Intl.DateTimeFormat`, with DST tests in `lib/__tests__/timezone.test.ts` and `schedule.test.ts`.
+6. **Sign-in rate limit is still open** — see action item 6.
+
+**Runtime check** (temp `DATA_DIR`, `next start` on port 3111): unauthenticated `/api/state` → `401 {"error":"Not signed in."}`; `/` → `307` to `/login`; register → `200`; authenticated `/api/state` → `200`; authenticated `/` → `200`.
 
 ## Options Considered
 
@@ -58,9 +71,9 @@ Single-user apps often skip defense in depth, but here the cost is one wrapper f
 - **Revisit:** if multi-user ever becomes a goal, `requireSession()` is the single choke point to extend with roles.
 
 ## Action Items
-1. [ ] `http/route.ts` wrapper + `requireSession()` (React `cache()`-style per-request memo).
-2. [ ] Wrap all 28 handlers; add a test asserting every exported handler is wrapped.
-3. [ ] Make `proxy.ts` check cookie presence only; remove the tick bypass.
-4. [ ] `runtime/scheduler.ts` calling `runDue()` directly; delete `/api/automations/tick` and `schedulerKey`.
-5. [ ] `settings.timezone`; make `nextRunOf` and hour bucketing timezone-aware; tests across DST boundaries.
-6. [ ] Sign-in rate limit.
+1. [x] `http/route.ts` wrapper + `requireSession()` — `lib/http/route.ts` + `lib/auth.ts` → `requestUser()` (the session lookup is one indexed row read; no per-request memo cache was needed for a single user).
+2. [x] Wrap all protected handlers — 25 route files wrapped; the tick route was deleted, so 26 route files remain.
+3. [x] Make `proxy.ts` optimistic; remove the tick bypass.
+4. [x] Scheduler calling `runDue()` directly; delete `/api/automations/tick` and `schedulerKey`.
+5. [x] `settings.timezone`; `nextRunOf` and hour bucketing timezone-aware; DST tests.
+6. [ ] Sign-in rate limit — **still open**. A small in-memory counter (5 failures / 15 min per IP) on `POST /api/auth`; the app can be reachable on a LAN.

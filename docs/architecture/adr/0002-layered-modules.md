@@ -1,6 +1,6 @@
 # ADR-002: Layered modules: domain → application → infrastructure, with thin routes
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-11-17
 **Deciders:** Maintainer (alpernae)
 
@@ -26,6 +26,29 @@ app/api/*  ──▶  application/  ──▶  domain/
 - **app/api/**: adapters only: parse and validate, call `requireSession()`, call one use case, serialize. Target ≤ 30 lines per handler.
 
 Enforce it with ESLint `no-restricted-imports` zones: `lib/**` / `src/server/**` must not import `app/**`, and `domain/**` must not import `infrastructure/**` or `node:*`.
+
+## Implementation notes (2026-11-20)
+
+The layering landed in four slices on `docs/architecture-design`:
+
+| Commit | Slice |
+|---|---|
+| `329abeb` | `lib/application/drafts.ts` + `lib/application/tools.ts`; the two routes became thin adapters; `lib/automations.ts` calls the use cases and no longer fakes `Request` objects. |
+| `4c4f1c2` | `lib/http/route.ts` wraps every protected route; `proxy.ts` is optimistic for `/api/*`. |
+| `bf13695` | Pure modules moved to `lib/domain/`; `Post`/`Manual` moved to `lib/domain/post.ts`. |
+| `65db1a0` | Migration 007 + `lib/trackers.ts` — the last `meta` blob became rows. |
+
+**Deviation — no ESLint.** The repo has no ESLint setup, so the import-zone rules are enforced by a **vitest guard test** instead: `lib/__tests__/architecture.test.ts` fails the build when
+
+1. any module under `lib/` imports `app/`,
+2. the application layer imports a route handler, or
+3. a `lib/domain/` module imports anything outside `lib/domain/` (no `node:*`, no `server-only`, no DB).
+
+That is the same rule set the ADR wanted, enforced at test time instead of lint time — and it runs in the existing `npm test` gate.
+
+**Shape of the layers as implemented.** `lib/domain/` (pure) · `lib/application/` (use cases) · `lib/http/route.ts` (adapter helper) · `lib/` root (infrastructure: DB, AI, Apify, secrets). The folder names matter less than the dependency direction, which the guard test pins.
+
+**Not pure yet.** `lib/normalize.ts` still imports the DB (it has both the platform mappers and the ingest writer) and `lib/playbook.ts` / `lib/tool-prompts.ts` still import `engine.ts`; moving them is optional and not on the critical path.
 
 ## Options Considered
 
@@ -59,8 +82,8 @@ The codebase is small enough that a big-bang rewrite is unnecessary and large en
 - **Revisit:** if `application/` grows past about 20 modules, group them by bounded context (`recon/`, `writing/`, `automation/`).
 
 ## Action Items
-1. [ ] Extract `application/drafts.ts` (from `app/api/generate/route.ts`) and `application/tools.ts` (from `app/api/tools/route.ts`); routes delegate to them.
-2. [ ] Change `lib/automations.ts` to call those use cases; delete the route imports and the fake `Request` helper.
-3. [ ] Move pure modules to `domain/` and inject `now`/`tz` instead of reading the server clock.
-4. [ ] Add ESLint import-zone rules; add the `typecheck` and `test` scripts.
-5. [ ] Add vitest suites for `patterns`, `score`, `normalize` (fixture datasets per actor), `importer`, `schedule`, `limits`.
+1. [x] Extract `application/drafts.ts` (from `app/api/generate/route.ts`) and `application/tools.ts` (from `app/api/tools/route.ts`); routes delegate to them. — `329abeb`
+2. [x] Change `lib/automations.ts` to call those use cases; delete the route imports and the fake `Request` helper. — `329abeb`
+3. [x] Move pure modules to `domain/` and inject `now`/`tz` instead of reading the server clock. — `bf13695` (`domain/schedule.ts` takes `from`/`tz` as parameters with defaults; `domain/patterns.ts` takes a timezone)
+4. [x] Add import-zone rules and the `typecheck` / `test` scripts. — rules landed as a vitest guard test (`lib/__tests__/architecture.test.ts`) instead of ESLint; scripts are in `package.json`
+5. [x] Add vitest suites for `patterns`, `score`, `normalize`, `importer`, `schedule`, `limits`. — plus `timezone`, `secrets`, `settings`, `migrations`, `operational tables` and the architecture guard (70 tests in 12 files)
