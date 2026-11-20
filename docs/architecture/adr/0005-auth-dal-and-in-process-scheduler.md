@@ -31,7 +31,7 @@ Landed in commit `4c4f1c2` (plus the Phase 0 timezone work in `bd2b62b`):
 3. **`proxy.ts` is optimistic**: `/api/*` passes through untouched (each route enforces its own session), page visits redirect to `/login`, and `/login` redirects back when already signed in. The scheduler-key bypass is deleted.
 4. **The scheduler runs in-process**: `lib/startup.ts` calls `runDue()` directly every 30 s (guarded against dev hot-reload duplicates) and polls active Apify runs in the same tick. `/api/automations/tick` and `schedulerKey` are deleted; the stale key is cleared from `app_state`/`meta` on the next boot.
 5. **Timezone is explicit**: `settings.timezone` (IANA) is stored in the settings table, `nextRunOf(schedule, from, tz)` and every hour/weekday bucket compute wall-clock time through `Intl.DateTimeFormat`, with DST tests in `lib/__tests__/timezone.test.ts` and `schedule.test.ts`.
-6. **Sign-in rate limit is still open** — see action item 6.
+6. **Sign-in rate limit is live** — `lib/http/rate-limit.ts` plus the `/api/auth` route. See action item 6.
 
 **Runtime check** (temp `DATA_DIR`, `next start` on port 3111): unauthenticated `/api/state` → `401 {"error":"Not signed in."}`; `/` → `307` to `/login`; register → `200`; authenticated `/api/state` → `200`; authenticated `/` → `200`.
 
@@ -76,4 +76,4 @@ Single-user apps often skip defense in depth, but here the cost is one wrapper f
 3. [x] Make `proxy.ts` optimistic; remove the tick bypass.
 4. [x] Scheduler calling `runDue()` directly; delete `/api/automations/tick` and `schedulerKey`.
 5. [x] `settings.timezone`; `nextRunOf` and hour bucketing timezone-aware; DST tests.
-6. [ ] Sign-in rate limit — **still open**. A small in-memory counter (5 failures / 15 min per IP) on `POST /api/auth`; the app can be reachable on a LAN.
+6. [x] Sign-in rate limit — `lib/http/rate-limit.ts`: an in-memory counter (5 failures / 15 min per IP, read from `x-forwarded-for` → `x-real-ip` → `local`). The 6th attempt gets `429` with a `Retry-After` header; a successful sign-in clears the slate. Only real credential guesses count — a missing username or password is a `400`, not a failure. The counter is in memory, so restarting the app resets it (the scrypt hash is the real defense; this only makes guessing expensive).
