@@ -51,4 +51,18 @@ describe('architecture rules', () => {
     }
     expect(offenders).toEqual([]);
   });
+
+  it('domain modules import nothing outside the domain', () => {
+    const domainDir = path.join(LIB, 'domain');
+    if (!fs.existsSync(domainDir)) return;
+    const offenders: string[] = [];
+    for (const file of walk(domainDir)) {
+      for (const spec of imports(fs.readFileSync(file, 'utf8'))) {
+        // './x' stays inside the domain; everything else (db, node:*, app) is out
+        if (spec.startsWith('./')) continue;
+        offenders.push(`${path.relative(process.cwd(), file)} → ${spec}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
 });

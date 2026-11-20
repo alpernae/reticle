@@ -1,7 +1,6 @@
 // Analytics import parser — turns pasted platform exports (X Analytics CSV,
 // LinkedIn stats copy, IG/TikTok tables, markdown rows, or loose "text — N"
 // lines) into winner-log rows. All parsing runs locally; no platform calls.
-import 'server-only';
 
 export type ImportedRow = {
   platform: string;   // 'X' | 'LinkedIn' | 'Instagram' | 'TikTok' | 'Other'

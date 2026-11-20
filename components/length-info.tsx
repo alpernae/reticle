@@ -3,7 +3,7 @@
 // and the "first reply" link box — post the post, then reply to it with this.
 import { useState } from 'react';
 import { btn } from '@/components/panel';
-import { platformLength, postLimit, threadPosts } from '@/lib/limits';
+import { platformLength, postLimit, threadPosts } from '@/lib/domain/limits';
 import { Check, Copy, CornerDownRight } from 'lucide-react';
 
 export function LengthBadge({ platform, text, format, limit: limitOverride, thread }: { platform: string; text: string; format?: string | null; limit?: number | null; thread?: boolean }) {

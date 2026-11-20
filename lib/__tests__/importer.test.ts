@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseImport } from '../importer';
+import { parseImport } from '../domain/importer';
 
 describe('parseImport', () => {
   it('reads a CSV export with a header row', () => {

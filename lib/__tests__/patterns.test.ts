@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { analyze, engagement, hookType, patternLibrary } from '../patterns';
+import { analyze, engagement, hookType, patternLibrary } from '../domain/patterns';
 import type { Post } from '../engine';
 
 const post = (over: Partial<Post> & { id: string }): Post => ({

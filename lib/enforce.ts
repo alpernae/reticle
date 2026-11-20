@@ -5,7 +5,7 @@
 import 'server-only';
 import { smartAI, type AIModelRef } from './aichain';
 import type { PromptCtx } from './prompt';
-import { platformLength, postLimit, splitFirstReply, threadPosts } from './limits';
+import { platformLength, postLimit, splitFirstReply, threadPosts } from './domain/limits';
 
 export type LengthInfo = { length: number; limit: number | null; over: boolean; shortened: number; firstReply: string };
 

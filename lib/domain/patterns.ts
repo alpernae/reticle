@@ -11,8 +11,7 @@
 // hashtags, posting hour) and the fingerprints are aggregated into a pattern
 // library: which traits LIFT outlier scores per platform. The AI receives
 // compact winner cards + the pattern table instead of raw scraper JSON.
-import 'server-only';
-import type { Post } from './engine';
+import type { Post } from './post';
 import { hourInTz, systemTimezone, weekdayInTz } from './timezone';
 
 export type HookType =

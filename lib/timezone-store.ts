@@ -2,7 +2,7 @@
 // Kept apart from lib/timezone.ts so the pure time math stays client-safe.
 import 'server-only';
 import { readSetting, writeSetting } from './settings';
-import { isValidTimezone, systemTimezone } from './timezone';
+import { isValidTimezone, systemTimezone } from './domain/timezone';
 
 const KEY = 'timezone';
 

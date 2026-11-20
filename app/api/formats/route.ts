@@ -4,8 +4,8 @@ import { smartAI } from '@/lib/aichain';
 import { tracked, RunCancelled } from '@/lib/activity';
 import { AUDIENCES, QUICK_FORMATS, type Tracker } from '@/lib/formats';
 import { allPayload } from '@/lib/engine';
-import { analyze, winners } from '@/lib/patterns';
-import { fitScorer } from '@/lib/score';
+import { analyze, winners } from '@/lib/domain/patterns';
+import { fitScorer } from '@/lib/domain/score';
 import { readTimezone } from '@/lib/timezone-store';
 import { route } from '@/lib/http/route';
 

@@ -14,7 +14,7 @@ import { ModelPicker, pickedModel } from '@/components/model-picker';
 import { Sel } from '@/components/sel';
 import { Spinner } from '@/components/panelui/spinner';
 import { toast } from '@/components/toaster';
-import { DAY_SHORT, describeSchedule, nextRunOf, untilText, type Schedule } from '@/lib/schedule';
+import { DAY_SHORT, describeSchedule, nextRunOf, untilText, type Schedule } from '@/lib/domain/schedule';
 import { ArrowDown, ArrowUp, ArrowUpRight, CalendarClock, Clock, Play, Plus, Power, Save, Trash2, X as XIcon } from 'lucide-react';
 
 type Worker = 'generate' | 'tool' | 'agent' | 'prompt' | 'collect';

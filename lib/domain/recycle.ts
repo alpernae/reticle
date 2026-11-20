@@ -14,7 +14,6 @@
 // Jaccard. An inverted index over shingles keeps it fast — only posts that
 // share a reasonably rare shingle are ever compared. Very short posts are
 // compared on their whole normalized text instead.
-import 'server-only';
 import type { Analyzed } from './patterns';
 
 export type RecycledCopy = {

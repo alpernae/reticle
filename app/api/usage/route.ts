@@ -3,7 +3,7 @@ import { getStore } from '@/lib/db';
 import { readModelStatus } from '@/lib/ai';
 import { spendInfo } from '@/lib/apify';
 import { readSetting } from '@/lib/settings';
-import { zonedParts, zonedTimeToUtc } from '@/lib/timezone';
+import { zonedParts, zonedTimeToUtc } from '@/lib/domain/timezone';
 import { readTimezone } from '@/lib/timezone-store';
 import { route } from '@/lib/http/route';
 

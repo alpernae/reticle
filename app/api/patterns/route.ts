@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { allPayload } from '@/lib/engine';
-import { analyze, patternLibrary, winners, HOOK_LABEL } from '@/lib/patterns';
-import { findRecycled } from '@/lib/recycle';
+import { analyze, patternLibrary, winners, HOOK_LABEL } from '@/lib/domain/patterns';
+import { findRecycled } from '@/lib/domain/recycle';
 import { CATEGORIES, inCategory, categoryCounts } from '@/lib/categories';
 import { readTimezone } from '@/lib/timezone-store';
 import { route } from '@/lib/http/route';

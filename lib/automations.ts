@@ -21,7 +21,7 @@ import { smartAI } from './aichain';
 import { TOOLS } from './tools';
 import { AGENTS } from './jobs';
 import { PLATFORM_HINTS, analysisDigest, digestText } from './engine';
-import { nextRunOf, type Schedule } from './schedule';
+import { nextRunOf, type Schedule } from './domain/schedule';
 import { readTimezone } from './timezone-store';
 
 export type WorkerKind = 'generate' | 'tool' | 'agent' | 'prompt' | 'collect';
@@ -39,7 +39,7 @@ export type AutoStep = {
   withData?: boolean;        // worker 'prompt': include your data digest
   model?: ModelRef;
 };
-export type { Schedule } from './schedule';
+export type { Schedule } from './domain/schedule';
 export type AutoRunRec = { at: number; status: string; runId: string; ms: number | null; error?: string; trigger: 'schedule' | 'manual' };
 export type Automation = {
   id: string; name: string; description: string; enabled: boolean;

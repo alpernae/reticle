@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   addDays, hourInTz, isValidTimezone, parseLocalDateTime, systemTimezone,
   tzOffsetMs, weekdayInTz, zonedParts, zonedTimeToUtc,
-} from '../timezone';
+} from '../domain/timezone';
 
 describe('timezone math', () => {
   it('reads wall-clock parts in the requested zone', () => {

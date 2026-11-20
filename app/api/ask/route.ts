@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { allPayload, analysisDigest, digestText } from '@/lib/engine';
-import { analyze } from '@/lib/patterns';
+import { analyze } from '@/lib/domain/patterns';
 import { smartAI } from '@/lib/aichain';
 import { tracked, RunCancelled } from '@/lib/activity';
 import { readTimezone } from '@/lib/timezone-store';

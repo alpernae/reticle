@@ -4,9 +4,9 @@
 // output contract the route can parse.
 import 'server-only';
 import { allPayload } from './engine';
-import { analyze, patternLibrary, patternTable, winners, winnerCard, type Analyzed } from './patterns';
+import { analyze, patternLibrary, patternTable, winners, winnerCard, type Analyzed } from './domain/patterns';
 import { PLATFORM_LIMITS, TOOLS, type ToolDef, type ToolPlatform } from './tools';
-import { replyPrompt } from './replies';
+import { replyPrompt } from './domain/replies';
 import { readTimezone } from './timezone-store';
 
 const AUD: Record<string, string> = {

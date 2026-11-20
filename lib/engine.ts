@@ -5,21 +5,14 @@
 import 'server-only';
 import { getStore, type PostRow } from './db';
 import { readState, writeState, readStateRaw, writeStateRaw } from './app-state';
-import { analyze, patternLibrary, patternTable, winners, winnerCard } from './patterns';
-import { findRecycled, recycledText } from './recycle';
-import { geoRegions } from './geo';
-import { hourInTz } from './timezone';
+import { analyze, patternLibrary, patternTable, winners, winnerCard } from './domain/patterns';
+import { findRecycled, recycledText } from './domain/recycle';
+import { geoRegions } from './domain/geo';
+import { hourInTz } from './domain/timezone';
 import { readTimezone } from './timezone-store';
+import type { Post, Manual } from './domain/post';
 
-export type Post = {
-  id: string; source: string; title: string; text: string; url: string; link: string; score: number; comments: number; created: number;
-  T?: string; topics?: string[]; security?: boolean; dev?: boolean; views?: number;
-  // v2 normalizer fields (see lib/normalize.ts) — absent on legacy rows
-  author?: string; authorFollowers?: number; authorLocation?: string; shares?: number; saves?: number;
-  media?: string; hashtags?: string[]; body?: string; durationSec?: number;
-  aiCats?: string[]; // AI-assigned audience categories (lib/categories.ts keys)
-};
-export type Manual = { id: number; platform: string; text: string; eng: number; when: string; ts: number; likes?: number | null; comments?: number | null; views?: number | null };
+export type { Post, Manual };
 export type AIStatus = { ok: boolean; message: string; ts: number } | null;
 export type AIAnalysis = { mode: 'ai' | 'stats'; text: string; ts: number; via?: { providerID: string; id: string } | null } | null;
 export type DB = { posts: Post[]; manual: Manual[]; lastCollect: { ts: number; tookMs: number; summary: Record<string, string | number> } | null; lastAI?: AIStatus; lastGoodModel?: { providerID: string; id: string } | null; lastAnalysis?: AIAnalysis };

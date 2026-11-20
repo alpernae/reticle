@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { describeSchedule, nextRunOf, untilText } from '../schedule';
+import { describeSchedule, nextRunOf, untilText } from '../domain/schedule';
 
 const IST = 'Europe/Istanbul';
 const UTC = 'UTC';

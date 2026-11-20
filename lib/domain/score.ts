@@ -14,7 +14,6 @@
 // It measures structure, not topic quality or truth — and it's only as good as
 // the data behind it (shown as n). The real verdict is the numbers you log on
 // Winners after posting.
-import 'server-only';
 import { HOOK_LABEL, hookType, patternLibrary, type Analyzed, type PatternRow } from './patterns';
 
 export type FitFactor = { trait: string; value: string; lift: number; n: number; weight: number };

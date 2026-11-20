@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { platformLength, postLimit, xLength } from '../limits';
+import { platformLength, postLimit, xLength } from '../domain/limits';
 
 describe('X weighted length', () => {
   it('counts latin text by grapheme', () => {

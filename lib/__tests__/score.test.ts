@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { fitScorer } from '../score';
-import { analyze } from '../patterns';
+import { fitScorer } from '../domain/score';
+import { analyze } from '../domain/patterns';
 import type { Post } from '../engine';
 
 const post = (over: Partial<Post> & { id: string }): Post => ({

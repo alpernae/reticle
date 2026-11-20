@@ -7,13 +7,13 @@
 // library code any more.
 import 'server-only';
 import { PLATFORM_HINTS, topicSpikes, fallbackDraft, allPayload } from '../engine';
-import { analyze, patternLibrary, patternTable, winners, winnerCard, type Analyzed } from '../patterns';
+import { analyze, patternLibrary, patternTable, winners, winnerCard, type Analyzed } from '../domain/patterns';
 import { smartAI } from '../aichain';
 import { tracked, RunCancelled } from '../activity';
 import { fitToLimit } from '../enforce';
 import { FORMATS_BY_PLATFORM, FORMAT_PLAYBOOK, type PlatformKey } from '../playbook';
-import { fitScorer } from '../score';
-import { findRecycled, recycledText } from '../recycle';
+import { fitScorer } from '../domain/score';
+import { findRecycled, recycledText } from '../domain/recycle';
 import { readTimezone } from '../timezone-store';
 
 export type GenerateInput = {
