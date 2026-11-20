@@ -126,8 +126,18 @@ unless a page asks for a post by name.
 
 ### Still open
 
-- **Phase 4e:** a nightly `VACUUM INTO` backup task, a `GET /api/health`
-  endpoint and an optional SSE `/api/events` to replace the remaining
-  polling. None of these depend on the read model.
 - **Incremental baselines** past about 50k posts (see the consequences
   section).
+
+### Phase 4e (implemented the same day)
+
+The optional last piece of the phase landed too:
+
+- The **nightly backup** is a task (`kind: 'backup'`) that runs `VACUUM INTO`
+  — a consistent, compacted copy while the app keeps running — keeps the
+  newest seven and reschedules itself for the next 03:00.
+- **`GET /api/health`** is open and minimal (the app, the database, the
+  uptime) so the Docker `HEALTHCHECK` can use it; **`GET /api/status`** is the
+  full picture behind the session.
+- **`GET /api/events`** is the live stream: one SSE connection per tab
+  carries the activity summary the shell used to poll for.
