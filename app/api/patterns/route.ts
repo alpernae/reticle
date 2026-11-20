@@ -4,9 +4,10 @@ import { analyze, patternLibrary, winners, HOOK_LABEL } from '@/lib/patterns';
 import { findRecycled } from '@/lib/recycle';
 import { CATEGORIES, inCategory, categoryCounts } from '@/lib/categories';
 import { readTimezone } from '@/lib/timezone-store';
+import { route } from '@/lib/http/route';
 
 /** GET ?platform=x&niche=1 — outlier winners + the pattern library (deterministic, no AI). */
-export async function GET(req: Request) {
+const handler_GET = async (req: Request) => {
   const u = new URL(req.url);
   const platform = u.searchParams.get('platform') || '';
   const nicheOnly = u.searchParams.get('niche') === '1';
@@ -37,3 +38,5 @@ export async function GET(req: Request) {
     recycled: findRecycled(scope).slice(0, 30),
   });
 }
+
+export const GET = route(handler_GET);

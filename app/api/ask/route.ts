@@ -4,6 +4,7 @@ import { analyze } from '@/lib/patterns';
 import { smartAI } from '@/lib/aichain';
 import { tracked, RunCancelled } from '@/lib/activity';
 import { readTimezone } from '@/lib/timezone-store';
+import { route } from '@/lib/http/route';
 
 export const maxDuration = 180;
 
@@ -12,7 +13,7 @@ const STOP = new Set('a an the and or of to in on for with about what which who 
 /** POST { q, model? } → { answer, posts } — "Ask Reticle" (the top-bar dock).
  *  Finds the collected posts that match the question, then answers it from
  *  your data digest + those posts. Recorded on Activity. */
-export async function POST(req: Request) {
+const handler_POST = async (req: Request) => {
   const b = await req.json().catch(() => ({} as any));
   const q = String(b.q || '').replace(/\s+/g, ' ').trim().slice(0, 400);
   if (q.length < 3) return NextResponse.json({ error: 'Ask a question.' }, { status: 400 });
@@ -53,3 +54,5 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: String(e?.message || e), posts }, { status: 500 });
   }
 }
+
+export const POST = route(handler_POST);

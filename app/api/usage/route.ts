@@ -5,6 +5,7 @@ import { spendInfo } from '@/lib/apify';
 import { readSetting } from '@/lib/settings';
 import { zonedParts, zonedTimeToUtc } from '@/lib/timezone';
 import { readTimezone } from '@/lib/timezone-store';
+import { route } from '@/lib/http/route';
 
 /**
  * GET → AI usage as Reticle itself records it (the sidebar Usage widget):
@@ -15,7 +16,7 @@ import { readTimezone } from '@/lib/timezone-store';
  */
 const LABEL: Record<string, string> = { 'claude-cli': 'Claude CLI', anthropic: 'Claude API', opencode: 'OpenCode' };
 
-export async function GET() {
+const handler_GET = async () => {
   await connection();
   const store = getStore();
   const runs = store.listRuns(1000);
@@ -49,3 +50,5 @@ export async function GET() {
     apify: spend && (spend.spend != null || spend.limit > 0) ? { spend: spend.spend, limit: spend.limit, via: spend.via } : null,
   });
 }
+
+export const GET = route(handler_GET);

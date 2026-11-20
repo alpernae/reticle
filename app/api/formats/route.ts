@@ -7,19 +7,20 @@ import { allPayload } from '@/lib/engine';
 import { analyze, winners } from '@/lib/patterns';
 import { fitScorer } from '@/lib/score';
 import { readTimezone } from '@/lib/timezone-store';
+import { route } from '@/lib/http/route';
 
 export const maxDuration = 200;
 
 const readTrackers = (): Tracker[] => { try { const v = JSON.parse(getStore().getMeta('trackers') || '[]'); return Array.isArray(v) ? v : []; } catch { return []; } };
 
 /** GET — saved series trackers. */
-export async function GET() {
+const handler_GET = async () => {
   await connection(); // request-time: SQLite reads are sync, so without this Next prerenders & caches the response
   return NextResponse.json({ trackers: readTrackers() });
 }
 
 /** POST { action: 'save', trackers } | { action: 'polish', text, model? } | { action: 'quick', format, audience, platform, count, idea?, model? } */
-export async function POST(req: Request) {
+const handler_POST = async (req: Request) => {
   const body = await req.json().catch(() => ({} as any));
   const pinned = body?.model?.providerID && body?.model?.id ? body.model : null;
 
@@ -100,3 +101,6 @@ function splitOutsideFences(s: string): string[] {
   out.push(cur.join('\n'));
   return out;
 }
+
+export const GET = route(handler_GET);
+export const POST = route(handler_POST);

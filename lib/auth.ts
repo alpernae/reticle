@@ -57,6 +57,24 @@ export function sessionUser(token: string | undefined | null): string | null {
   return s ? s.user : null;
 }
 
+/** The session cookie's value in a request, or null when it isn't set. */
+export function cookieValue(req: Request, name = COOKIE): string | null {
+  const header = req.headers.get('cookie') || '';
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq < 0) continue;
+    if (part.slice(0, eq).trim() === name) {
+      try { return decodeURIComponent(part.slice(eq + 1).trim()); } catch { return part.slice(eq + 1).trim(); }
+    }
+  }
+  return null;
+}
+
+/** The signed-in owner behind a request, or null. The one place routes ask. */
+export function requestUser(req: Request): string | null {
+  return sessionUser(cookieValue(req));
+}
+
 export function signOut(token: string | undefined | null) {
   if (token) getStore().delSession(token);
 }

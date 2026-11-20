@@ -5,9 +5,10 @@ import { TOOLS } from '@/lib/tools';
 import { agentCatalog } from '@/lib/jobs';
 import { FORMATS_BY_PLATFORM, FORMAT_PLAYBOOK } from '@/lib/playbook';
 import { readTimezone } from '@/lib/timezone-store';
+import { route } from '@/lib/http/route';
 
 /** GET → automations (+ live "running" flag) and the catalog the builder needs. */
-export async function GET() {
+const handler_GET = async () => {
   await connection();
   const autos = listAutomations().map(a => ({ ...a, running: isRunning(a.id) }));
   return NextResponse.json({
@@ -23,7 +24,7 @@ export async function GET() {
 }
 
 /** POST { action: save | delete | toggle | run | cancel, … } */
-export async function POST(req: Request) {
+const handler_POST = async (req: Request) => {
   const b = await req.json().catch(() => ({} as any));
   try {
     switch (b.action) {
@@ -43,3 +44,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: String(e?.message || e) }, { status: 400 });
   }
 }
+
+export const GET = route(handler_GET);
+export const POST = route(handler_POST);

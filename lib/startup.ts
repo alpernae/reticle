@@ -51,16 +51,25 @@ export function startScheduler() {
   };
 
   void (async () => {
-    const { schedulerKey } = await import('./automations');
-    const key = schedulerKey();
-    const port = process.env.PORT || '3000';
-    const tick = () => {
-      void pollApify();
-      fetch(`http://127.0.0.1:${port}/api/automations/tick`, { method: 'POST', headers: { 'x-payload-scheduler': key } })
-        .then(r => r.json()).then(j => { if (j?.started?.length) console.info(`[payload] automations started: ${j.started.join(', ')}`); })
-        .catch(() => {}); // server still booting — next tick
+    const tick = async () => {
+      await pollApify();
+      try {
+        // the scheduler runs in-process — no HTTP hop, no scheduler key
+        const { runDue } = await import('./automations');
+        const started = runDue();
+        if (started.length) console.info(`[payload] automations started: ${started.join(', ')}`);
+      } catch (e: any) {
+        console.warn('[payload] scheduler tick failed:', String(e?.message || e).slice(0, 200));
+      }
     };
-    g.__payloadScheduler = setInterval(tick, 30_000);
-    setTimeout(tick, 8_000);
+    // the old scheduler key is dead weight — drop it on the next boot
+    try {
+      const { deleteState } = await import('./app-state');
+      deleteState('schedulerKey');
+      const { getStore } = await import('./db');
+      getStore().setMeta('schedulerKey', '');
+    } catch { /* first boot */ }
+    g.__payloadScheduler = setInterval(() => { void tick(); }, 30_000);
+    setTimeout(() => { void tick(); }, 8_000);
   })();
 }

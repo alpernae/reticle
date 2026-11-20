@@ -2,13 +2,14 @@ import { NextResponse, connection } from 'next/server';
 import { getStore } from '@/lib/db';
 import { cancelRun, isLive } from '@/lib/activity';
 import { jobsList, jobAction, deleteJob } from '@/lib/jobs';
+import { route } from '@/lib/http/route';
 
 /**
  * GET            → { runs, running } — every AI run (Generate, Toolkit, Formats, brief,
  *                  categorizer) merged with Workflow jobs, newest first
  * GET ?id=<id>   → one run with its full input + output
  */
-export async function GET(req: Request) {
+const handler_GET = async (req: Request) => {
   await connection(); // request-time — SQLite reads are sync
   const params = new URL(req.url).searchParams;
   const id = params.get('id');
@@ -36,7 +37,7 @@ export async function GET(req: Request) {
 }
 
 /** POST { action: 'cancel' | 'delete', id } | { action: 'clear' } (finished runs) */
-export async function POST(req: Request) {
+const handler_POST = async (req: Request) => {
   const body = await req.json().catch(() => ({} as any));
   const id = String(body?.id || '');
   const store = getStore();
@@ -65,3 +66,6 @@ function jobToRun(j: ReturnType<typeof jobsList>[number]): Out & { result?: stri
     created: j.created, finished: j.finished, ms: j.finished && j.started ? j.finished - j.started : null,
   };
 }
+
+export const GET = route(handler_GET);
+export const POST = route(handler_POST);

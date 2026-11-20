@@ -16,7 +16,6 @@
 // Stored as JSON in SQLite meta ('automations') — one user, a handful of rows.
 import 'server-only';
 import { getStore, type AutomationRow } from './db';
-import { readStateRaw, writeStateRaw } from './app-state';
 import { tracked, type RunCtx } from './activity';
 import { smartAI } from './aichain';
 import { TOOLS } from './tools';
@@ -317,12 +316,5 @@ export function runDue(now = Date.now()): string[] {
   return started;
 }
 
-// ---------------- scheduler key (lets the server's own timer through the auth proxy) ----------------
-export function schedulerKey(): string {
-  let k = readStateRaw('schedulerKey') || '';
-  if (k.length < 32) {
-    k = Array.from(crypto.getRandomValues(new Uint8Array(24)), b => b.toString(16).padStart(2, '0')).join('');
-    writeStateRaw('schedulerKey', k);
-  }
-  return k;
-}
+// The scheduler tick runs in-process (lib/startup.ts) — it calls runDue() directly,
+// so there is no scheduler key and no HTTP hop any more.

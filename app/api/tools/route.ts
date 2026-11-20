@@ -2,11 +2,14 @@
 // The use case itself lives in lib/application/tools.ts.
 import { NextResponse } from 'next/server';
 import { runTool } from '@/lib/application/tools';
+import { route } from '@/lib/http/route';
 
 export const maxDuration = 240;
 
-export async function POST(req: Request) {
+const handler_POST = async (req: Request) => {
   const body = await req.json().catch(() => ({} as any));
   const result = await runTool(body);
   return NextResponse.json(result.body, { status: result.status });
 }
+
+export const POST = route(handler_POST);

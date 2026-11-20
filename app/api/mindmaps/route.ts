@@ -2,9 +2,10 @@ import { NextResponse } from 'next/server';
 import { listMaps, saveMap, deleteMap, templateMap, type MindMap } from '@/lib/mindmaps';
 import { smartAI } from '@/lib/aichain';
 import { tracked, RunCancelled } from '@/lib/activity';
+import { route } from '@/lib/http/route';
 
 /** GET → map list; GET ?id= → one full map */
-export async function GET(req: Request) {
+const handler_GET = async (req: Request) => {
   const id = new URL(req.url).searchParams.get('id');
   const maps = listMaps();
   if (id) {
@@ -15,7 +16,7 @@ export async function GET(req: Request) {
 }
 
 /** POST { action: create | save | delete | expand } */
-export async function POST(req: Request) {
+const handler_POST = async (req: Request) => {
   const b = await req.json().catch(() => ({} as any));
   try {
     if (b.action === 'create') return NextResponse.json({ map: saveMap(templateMap(String(b.template || 'blank'))) });
@@ -56,3 +57,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: e instanceof RunCancelled ? 'cancelled' : String(e?.message || e) }, { status: e instanceof RunCancelled ? 499 : 400 });
   }
 }
+
+export const GET = route(handler_GET);
+export const POST = route(handler_POST);

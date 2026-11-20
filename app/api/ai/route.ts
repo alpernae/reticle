@@ -1,18 +1,19 @@
 import { NextResponse, connection } from 'next/server';
 import { aiProvidersStatus, callAI, saveAIConfig, setAnthropicKey, setClaudeOAuthToken, PROVIDER_LABEL, MODEL_CHOICES, opencodeModels, readLatency, readModelStatus, type ProviderId } from '@/lib/ai';
 import { readProfile, saveProfile } from '@/lib/prompt';
+import { route } from '@/lib/http/route';
 
 export const maxDuration = 120;
 
 /** GET — provider config + secret masks + creator profile. */
-export async function GET() {
+const handler_GET = async () => {
   await connection(); // request-time: SQLite reads are sync, so without this Next prerenders & caches the response
   return NextResponse.json(await statusWithModels());
 }
 
 /** POST { action: 'config', config } | { action: 'key', anthropicKey?, claudeOAuthToken? }
  *       | { action: 'profile', profile } | { action: 'test', provider } */
-export async function POST(req: Request) {
+const handler_POST = async (req: Request) => {
   const body = await req.json().catch(() => ({} as any));
   switch (body?.action) {
     case 'config':
@@ -50,3 +51,6 @@ async function statusWithModels() {
     latency: readLatency(), // ms of the last successful call per 'provider|model'
   };
 }
+
+export const GET = route(handler_GET);
+export const POST = route(handler_POST);

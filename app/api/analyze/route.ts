@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { analysisDigest, digestText, statsSummary, markAnalysis, markAI } from '@/lib/engine';
 import { smartAI } from '@/lib/aichain';
 import { tracked, RunCancelled } from '@/lib/activity';
+import { route } from '@/lib/http/route';
 
 export const maxDuration = 200;
 
@@ -12,7 +13,7 @@ export const maxDuration = 200;
  * meta table and re-served by /api/state until the next run. If every AI lane
  * is out of quota, a rules-based stats summary is stored instead (mode 'stats').
  */
-export async function POST(req: Request) {
+const handler_POST = async (req: Request) => {
   const body = await req.json().catch(() => ({} as any));
   const pinned = body?.model?.providerID && body?.model?.id ? body.model : null;
   const digest = analysisDigest();
@@ -54,3 +55,5 @@ Post this week: <idea>`;
     return NextResponse.json({ mode: 'none', text: '', hint: e instanceof RunCancelled ? 'cancelled' : String(e?.message || e) }, { status: e instanceof RunCancelled ? 499 : 500 });
   }
 }
+
+export const POST = route(handler_POST);

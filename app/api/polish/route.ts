@@ -7,6 +7,7 @@ import { fitScorer } from '@/lib/score';
 import { PLATFORM_LIMITS } from '@/lib/tools';
 import { fitToLimit } from '@/lib/enforce';
 import { readTimezone } from '@/lib/timezone-store';
+import { route } from '@/lib/http/route';
 
 export const maxDuration = 200;
 
@@ -17,7 +18,7 @@ export const maxDuration = 200;
  * Grounded: the creator's original brief is the only source of facts, and the
  * platform's pattern table + top winner structure keep the revision on a winning shape.
  */
-export async function POST(req: Request) {
+const handler_POST = async (req: Request) => {
   const b = await req.json().catch(() => ({} as any));
   const text = String(b?.text || '').slice(0, 6000);
   const instruction = String(b?.instruction || '').slice(0, 2000).trim();
@@ -86,3 +87,5 @@ OUTPUT exactly:
     return NextResponse.json({ error: e instanceof RunCancelled ? 'cancelled' : String(e?.message || e) }, { status: e instanceof RunCancelled ? 499 : 500 });
   }
 }
+
+export const POST = route(handler_POST);
