@@ -22,7 +22,7 @@ const HEARTBEAT_MS = 5_000;
 /** How often the worker looks for work. */
 const TICK_MS = 1_000;
 /** How many tasks may run at the same time, across all kinds. */
-const MAX_CONCURRENT = 4;
+const MAX_CONCURRENT = 6;
 /** How many finished tasks to keep. */
 const RETENTION = 1000;
 
@@ -46,7 +46,12 @@ const parseJson = <T,>(text: string | null | undefined, fallback: T): T => {
   try { return JSON.parse(text) as T; } catch { return fallback; }
 };
 
-/** The kinds whose limiter has a free slot right now. */
+/** The kinds whose limiter has a free slot right now.
+ *
+ *  Each resource has its own pool, so a task that queues a child never waits
+ *  for a slot its own child needs: an automation (pool "automation") queues a
+ *  workflow (pool "workflow"), a collect task (pool "apify") queues an ingest
+ *  task (pool "apify-import"). */
 function claimableKinds(): string[] {
   const used = new Map<string, number>();
   for (const r of state().running.values()) used.set(r.resource, (used.get(r.resource) || 0) + 1);

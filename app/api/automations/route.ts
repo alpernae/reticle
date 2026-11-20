@@ -1,6 +1,6 @@
 import { NextResponse, connection } from 'next/server';
 import { listAutomations, saveAutomation, deleteAutomation, setEnabled, runAutomation, isRunning, WORKERS } from '@/lib/automations';
-import { cancelRun } from '@/lib/activity';
+import { cancelTask } from '@/lib/application/tasks';
 import { TOOLS } from '@/lib/tools';
 import { agentCatalog } from '@/lib/jobs';
 import { FORMATS_BY_PLATFORM, FORMAT_PLAYBOOK } from '@/lib/playbook';
@@ -34,10 +34,11 @@ const handler_POST = async (req: Request) => {
       case 'run': {
         const id = String(b.id);
         if (isRunning(id)) return NextResponse.json({ error: 'already running' }, { status: 409 });
-        void runAutomation(id, 'manual'); // runs in the background; follow it on Activity
-        return NextResponse.json({ ok: true });
+        const res = runAutomation(id, 'manual'); // queued as a task; follow it on Activity
+        if (res.error) return NextResponse.json({ error: res.error }, { status: 400 });
+        return NextResponse.json({ ok: true, runId: res.runId });
       }
-      case 'cancel': return NextResponse.json({ ok: cancelRun(String(b.runId)) });
+      case 'cancel': return NextResponse.json({ ok: cancelTask(String(b.runId)) });
       default: return NextResponse.json({ error: 'unknown action' }, { status: 400 });
     }
   } catch (e: any) {

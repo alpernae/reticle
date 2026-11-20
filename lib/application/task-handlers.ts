@@ -84,7 +84,7 @@ const collect: TaskHandler = {
  * never leaves half a dataset behind.
  */
 const ingest: TaskHandler = {
-  resource: 'apify',
+  resource: 'apify-import',
   limit: 1,
   async run(ctx: TaskCtx): Promise<TaskResult> {
     const runId = String(ctx.input?.runId || '');
@@ -142,7 +142,7 @@ const tool: TaskHandler = {
  * same AI calls twice.
  */
 const workflow: TaskHandler = {
-  resource: 'ai',
+  resource: 'workflow',
   limit: 2,
   async run(ctx: TaskCtx): Promise<TaskResult> {
     const { AGENTS, buildAgentCtx, runAgentSteps } = await import('./workflows');
@@ -177,8 +177,39 @@ const workflow: TaskHandler = {
   },
 };
 
+/**
+ * `automation` — an automation's chain (lib/application/automation-chain.ts).
+ * Each step calls one worker; the chain's output and steps are the task's
+ * output, and the automation's history is updated when it finishes.
+ */
+const automation: TaskHandler = {
+  resource: 'automation',
+  limit: 2,
+  async run(ctx: TaskCtx): Promise<TaskResult> {
+    const { listAutomations, recordAutomationRun } = await import('../automations');
+    const { runAutomationChain } = await import('./automation-chain');
+    const input = ctx.input || {};
+    const a = listAutomations().find(x => x.id === input.automationId);
+    if (!a) return { status: 'failed', error: 'the automation no longer exists' };
+    const started = Date.now();
+    try {
+      const out = await runAutomationChain(a, input.trigger === 'schedule' ? 'schedule' : 'manual', {
+        step: label => ctx.step(label),
+        via: m => ctx.via(m),
+        signal: ctx.signal,
+      });
+      recordAutomationRun(a.id, ctx.id, 'done', Date.now() - started);
+      return { status: 'done', output: out };
+    } catch (e: any) {
+      const msg = String(e?.message || e).slice(0, 300);
+      recordAutomationRun(a.id, ctx.id, /cancel/i.test(msg) ? 'cancelled' : 'failed', Date.now() - started, msg);
+      throw e;
+    }
+  },
+};
+
 /** Every task kind the worker knows how to run. */
-export const HANDLERS: Record<string, TaskHandler> = { collect, ingest, generate, tool, workflow };
+export const HANDLERS: Record<string, TaskHandler> = { collect, ingest, generate, tool, workflow, automation };
 
 /** Register (or replace) a task kind — new kinds plug in here. */
 export function registerHandler(kind: string, handler: TaskHandler) {
