@@ -135,8 +135,50 @@ const tool: TaskHandler = {
   },
 };
 
+/**
+ * `workflow` — a Studio agent (lib/application/workflows.ts): a chain of AI
+ * steps. Every finished step is written to the task's checkpoint, so an
+ * interrupted workflow continues where it stopped instead of paying for the
+ * same AI calls twice.
+ */
+const workflow: TaskHandler = {
+  resource: 'ai',
+  limit: 2,
+  async run(ctx: TaskCtx): Promise<TaskResult> {
+    const { AGENTS, buildAgentCtx, runAgentSteps } = await import('./workflows');
+    const input = ctx.input || {};
+    const def = AGENTS.find(a => a.kind === input.kind);
+    if (!def) return { status: 'failed', error: `unknown agent "${String(input.kind || '')}"` };
+
+    const cp = (ctx.checkpoint || {}) as { notes?: string[]; meta?: { ms: number; chars: number }[] };
+    const done = Array.isArray(cp.notes) ? cp.notes : [];
+    const meta = Array.isArray(cp.meta) ? [...cp.meta] : [];
+    const notes = [...done];
+    const agentCtx = await buildAgentCtx(
+      def.kind,
+      String(input.topic || ''),
+      String(input.platform || 'x'),
+      input.model?.providerID && input.model?.id ? input.model : null,
+    );
+
+    const out = await runAgentSteps(
+      def,
+      agentCtx,
+      ctx.signal,
+      done,
+      (_i, label) => ctx.step(label),
+      (i, _label, text, ms) => {
+        meta[i] = { ms, chars: text.length };
+        notes.push(text);
+        ctx.saveCheckpoint({ notes: [...notes], meta });
+      },
+    );
+    return { status: 'done', output: out };
+  },
+};
+
 /** Every task kind the worker knows how to run. */
-export const HANDLERS: Record<string, TaskHandler> = { collect, ingest, generate, tool };
+export const HANDLERS: Record<string, TaskHandler> = { collect, ingest, generate, tool, workflow };
 
 /** Register (or replace) a task kind — new kinds plug in here. */
 export function registerHandler(kind: string, handler: TaskHandler) {

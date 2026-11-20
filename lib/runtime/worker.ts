@@ -109,6 +109,7 @@ function settle(row: TaskRow, patch: { status: string; output?: unknown; error?:
     leaseUntil: null,
     finished: patch.status === 'done' || patch.status === 'failed' || patch.status === 'cancelled' ? Date.now() : null,
   });
+  if (patch.status === 'done') store.closeActiveTaskStep(row.id, 'done');
   log(row, patch.status, ms);
 }
 
@@ -131,6 +132,7 @@ function failTask(row: TaskRow, message: string, ms: number, retry = true) {
     return;
   }
   store.patchTaskRow(row.id, { status: 'failed', error: message.slice(0, 1000), finished: Date.now(), leaseUntil: null });
+  store.closeActiveTaskStep(row.id, 'failed');
   recordTaskEvent(row.id, 'log', message.slice(0, 300), 'failed');
   log(row, 'failed', ms, message.slice(0, 120));
 }

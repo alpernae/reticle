@@ -117,7 +117,10 @@ export function recordTaskEvent(
   data?: unknown,
 ): void {
   try {
-    getStore().addTaskEventRow({
+    const store = getStore();
+    // a new step closes the previous one — the log shows one open step at a time
+    if (type === 'step' && state === 'active') store.closeActiveTaskStep(taskId);
+    store.addTaskEventRow({
       taskId,
       at: Date.now(),
       type,

@@ -23,11 +23,9 @@ const handler_GET = async (req: Request) => {
     return NextResponse.json({ running, recent, active: runs.filter(r => r.status === 'running').map(r => r.id) });
   }
   if (id) {
-    if (id.startsWith('job')) {
-      const j = jobsList().find(x => x.id === id);
-      if (!j) return NextResponse.json({ error: 'not found' }, { status: 404 });
-      return NextResponse.json({ run: jobToRun(j), job: j });
-    }
+    // Workflow jobs are tasks now — they carry their own ids.
+    const j = jobsList().find(x => x.id === id);
+    if (j) return NextResponse.json({ run: jobToRun(j), job: j });
     const r = store.getRun(id);
     if (!r) return NextResponse.json({ error: 'not found' }, { status: 404 });
     return NextResponse.json({ run: { ...rowOut(r), input: safe(r.input), output: safe(r.output) } });
@@ -43,7 +41,7 @@ const handler_POST = async (req: Request) => {
   const store = getStore();
   if (body?.action === 'clear') return NextResponse.json({ cleared: store.clearFinishedRuns() });
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
-  if (id.startsWith('job')) { // Workflow jobs keep their own controls
+  if (jobsList().some(j => j.id === id)) { // Workflow jobs keep their own controls
     if (body.action === 'cancel') return NextResponse.json(jobAction(id, 'stop'));
     if (body.action === 'delete') return NextResponse.json(deleteJob(id));
   }

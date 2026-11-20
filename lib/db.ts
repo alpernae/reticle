@@ -410,6 +410,10 @@ export class SocialDB {
     return this.prep('SELECT task_id AS taskId, seq, at, type, label, state, data FROM task_events WHERE task_id = ? ORDER BY seq ASC')
       .all(taskId) as unknown as TaskEventRow[];
   }
+  /** Close the task's open step — it is done (or failed). */
+  closeActiveTaskStep(taskId: string, state: 'done' | 'failed' = 'done') {
+    this.prep("UPDATE task_events SET state = ? WHERE task_id = ? AND type = 'step' AND state = 'active'").run(state, taskId);
+  }
 
   // ---- secrets (AES-256-GCM rows; encryption lives in lib/secrets.ts) ----
   getSecretRow(name: string): { ciphertext: string; iv: string; tag: string } | undefined {
