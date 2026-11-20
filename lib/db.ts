@@ -393,6 +393,17 @@ export class SocialDB {
       .run(now, bootAt).changes as number;
   }
   deleteTaskRow(id: string) { this.prep('DELETE FROM tasks WHERE id = ?').run(id); }
+  /** Remove finished tasks. Workflows are kept — they have their own page. */
+  clearFinishedTasks(): number {
+    return this.prep("DELETE FROM tasks WHERE status IN ('done', 'failed', 'cancelled') AND kind != 'workflow'")
+      .run().changes as number;
+  }
+  /** How many tasks of a kind are there (the Settings page's data card). */
+  countTaskRows(kind?: string): number {
+    return kind
+      ? (this.prep('SELECT COUNT(*) AS n FROM tasks WHERE kind = ?').get(kind) as { n: number }).n as number
+      : (this.prep('SELECT COUNT(*) AS n FROM tasks').get() as { n: number }).n as number;
+  }
   /** Keep the newest `keep` finished tasks; queued/running ones are never pruned. */
   pruneFinishedTasks(keep = 1000): number {
     return this.prep(
@@ -504,7 +515,7 @@ export class SocialDB {
     return this.prep('SELECT * FROM ai_runs WHERE id = ?').get(id) as unknown as (AiRunRow & { input: string; output: string }) | undefined;
   }
   delRun(id: string) { this.prep('DELETE FROM ai_runs WHERE id = ?').run(id); }
-  clearFinishedRuns() { return this.prep("DELETE FROM ai_runs WHERE status != 'running'").run().changes; }
+  clearFinishedRuns() { return this.prep("DELETE FROM ai_runs WHERE status != 'running'").run().changes as number; }
   /** Runs left 'running' by a previous server process can never finish. */
   markOrphanRuns(alive: Set<string>) {
     for (const r of this.prep("SELECT id FROM ai_runs WHERE status = 'running'").all() as { id: string }[]) {

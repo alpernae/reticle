@@ -208,8 +208,60 @@ const automation: TaskHandler = {
   },
 };
 
+/**
+ * The AI use cases that are plain request/answer work: Formats (quick posts,
+ * series polish), the Overview brief, the categorizer, Ask, the mind-map
+ * expander and the draft polisher. Each one is a use case in
+ * lib/application/*; the task wraps it so the work is durable.
+ *
+ * A use case that answers with a fallback (a template draft, a stats summary)
+ * still returns its body — but marks the task as failed, so the Activity log
+ * shows what really happened.
+ */
+const useCase = (load: () => Promise<(input: any, ctx: any) => Promise<any>>): TaskHandler => ({
+  resource: 'ai',
+  limit: 2,
+  async run(ctx: TaskCtx): Promise<TaskResult> {
+    const fn = await load();
+    const res = await fn(ctx.input || {}, ctx);
+    if (res?.failure) return { status: 'failed', error: res.failure, output: res };
+    return { status: 'done', output: res };
+  },
+});
+
+const formatQuick = useCase(async () => (await import('./formats')).quickPosts);
+const formatPolish = useCase(async () => (await import('./formats')).polishSeries);
+const categorize = useCase(async () => (await import('./categorize')).categorizeBatchTask);
+const ask = useCase(async () => (await import('./ask')).askReticle);
+const mindmap = useCase(async () => (await import('./mindmaps')).expandMindMap);
+const refine = useCase(async () => (await import('./polish')).polishDraft);
+
+/** `brief` — the Overview growth brief. The title learns the post count. */
+const brief: TaskHandler = {
+  resource: 'ai',
+  limit: 2,
+  async run(ctx: TaskCtx): Promise<TaskResult> {
+    const { growthBrief } = await import('./brief');
+    const { setTaskTitle } = await import('./tasks');
+    const res = await growthBrief(ctx.input || {}, ctx);
+    const posts = (res.body as any)?.posts;
+    if (typeof posts === 'number') setTaskTitle(ctx.id, `AI growth brief — ${posts} posts`);
+    if (res?.failure) return { status: 'failed', error: res.failure, output: res };
+    return { status: 'done', output: res };
+  },
+};
+
 /** Every task kind the worker knows how to run. */
-export const HANDLERS: Record<string, TaskHandler> = { collect, ingest, generate, tool, workflow, automation };
+export const HANDLERS: Record<string, TaskHandler> = {
+  collect, ingest, generate, tool, workflow, automation,
+  'format-quick': formatQuick,
+  'format-polish': formatPolish,
+  brief,
+  categorize,
+  ask,
+  mindmap,
+  refine,
+};
 
 /** Register (or replace) a task kind — new kinds plug in here. */
 export function registerHandler(kind: string, handler: TaskHandler) {

@@ -22,8 +22,10 @@ export type GenerateInput = {
   model?: { providerID: string; id: string } | null;
 };
 
-/** A use-case answer: the HTTP status the adapter should use and the JSON body. */
-export type UseCaseResult = { status: number; body: any };
+/** A use-case answer: the HTTP status the adapter should use and the JSON body.
+ *  `failure` marks the work as failed (the Activity log shows it) even when a
+ *  fallback body is returned to the caller. */
+export type UseCaseResult = { status: number; body: any; failure?: string };
 
 const TONE_GUIDE: Record<string, string> = {
   professional: 'Professional — clean, credible, precise; measured confidence.',

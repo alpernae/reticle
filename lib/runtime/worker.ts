@@ -118,8 +118,10 @@ function settle(row: TaskRow, patch: { status: string; output?: unknown; error?:
   log(row, patch.status, ms);
 }
 
-/** A failed task is retried while it has attempts left; the wait grows each time. */
-function failTask(row: TaskRow, message: string, ms: number, retry = true) {
+/** A failed task is retried while it has attempts left; the wait grows each time.
+ *  A failed task may still carry an output — the use case answered with a
+ *  fallback (a template draft, a stats summary) and the caller gets it. */
+function failTask(row: TaskRow, message: string, ms: number, retry = true, output?: unknown) {
   const store = getStore();
   const current = store.getTaskRow(row.id);
   const cancelled = !!current?.cancelRequested;
@@ -136,7 +138,10 @@ function failTask(row: TaskRow, message: string, ms: number, retry = true) {
     log(row, 'retry', ms, message.slice(0, 120));
     return;
   }
-  store.patchTaskRow(row.id, { status: 'failed', error: message.slice(0, 1000), finished: Date.now(), leaseUntil: null });
+  store.patchTaskRow(row.id, {
+    status: 'failed', error: message.slice(0, 1000), finished: Date.now(), leaseUntil: null,
+    ...(output === undefined ? {} : { output: JSON.stringify(output).slice(0, 400_000) }),
+  });
   store.closeActiveTaskStep(row.id, 'failed');
   recordTaskEvent(row.id, 'log', message.slice(0, 300), 'failed');
   log(row, 'failed', ms, message.slice(0, 120));
@@ -162,7 +167,7 @@ async function execute(row: TaskRow, handler: TaskHandler, abort: AbortControlle
     const ms = Date.now() - started;
     if (result.status === 'done') settle(row, { status: 'done', output: result.output ?? null }, ms);
     else if (result.status === 'waiting') settle(row, { status: 'waiting', runAfter: result.runAfter, output: result.output ?? null }, ms);
-    else failTask(row, result.error || 'task failed', ms, result.retry !== false);
+    else failTask(row, result.error || 'task failed', ms, result.retry !== false, result.output);
   } catch (e: any) {
     const ms = Date.now() - started;
     const msg = String(e?.message || e).slice(0, 1000);

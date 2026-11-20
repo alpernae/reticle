@@ -46,11 +46,13 @@ export type EnqueueInput = {
   runAfter?: number;
 };
 
-/** What a handler returns — the worker turns it into the task's next state. */
+/** What a handler returns — the worker turns it into the task's next state.
+ *  A failed task may still carry an output: the use case answered with a
+ *  fallback (a template draft, a stats summary) and the caller still gets it. */
 export type TaskResult =
   | { status: 'done'; output?: unknown }
   | { status: 'waiting'; runAfter: number; output?: unknown }
-  | { status: 'failed'; error: string; retry?: boolean };
+  | { status: 'failed'; error: string; output?: unknown; retry?: boolean };
 
 /** What a handler gets: the task, a signal, and the tools to report progress. */
 export type TaskCtx = {
@@ -70,6 +72,15 @@ export type TaskCtx = {
   saveCheckpoint: (value: unknown) => void;
   /** Extend the lease right now (the worker heartbeats on its own). */
   heartbeat: () => void;
+};
+
+/** What a use case needs while it works: a signal, a step, and the provider
+ *  that answered. A task context satisfies it — so a use case can be called
+ *  from a task handler or from anywhere else that has the same three things. */
+export type WorkCtx = {
+  signal: AbortSignal;
+  step: (label: string) => void;
+  via: (m: { providerID: string; id: string } | null | undefined) => void;
 };
 
 const parseJson = <T,>(text: string | null | undefined, fallback: T): T => {
@@ -172,6 +183,12 @@ export function enqueueTask(spec: EnqueueInput): Task {
 export function getTask(id: string): Task | null {
   const row = getStore().getTaskRow(String(id || ''));
   return row ? rowToTask(row) : null;
+}
+
+/** Rename a task once its handler knows more (e.g. "AI brief — 412 posts"). */
+export function setTaskTitle(id: string, title: string): void {
+  const t = String(title || '').slice(0, 160);
+  if (t) getStore().patchTaskRow(id, { title: t });
 }
 
 export function listTasks(opts: { kind?: string; status?: string; limit?: number } = {}): Task[] {
