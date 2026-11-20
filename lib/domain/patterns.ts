@@ -67,55 +67,126 @@ const median = (a: number[]) => {
 };
 const EMOJI = /\p{Extended_Pictographic}/gu;
 
-export function analyze(posts: Post[], tz = systemTimezone()): Analyzed[] {
+/** The facts about ONE post that do not depend on any other post. */
+export type Derived = {
+  eng: number;              // weighted engagement
+  hook: HookType;
+  hookLine: string;
+  words: number;
+  lengthBucket: 'short' | 'medium' | 'long';
+  hasLink: boolean;
+  emojiCount: number;
+};
+
+/**
+ * Derive the per-post facts. This is the single source of truth for them: the
+ * analyzer uses it, and the read model (ADR-004) writes the same values into
+ * the posts table so pages never have to recompute them.
+ */
+export function derive(p: Post): Derived {
+  const body = p.body || p.text || p.title || '';
+  const hookLine = (body.split('\n').map(s => s.trim()).find(Boolean) || p.title || '').slice(0, 240);
+  const words = body.split(/\s+/).filter(Boolean).length;
+  return {
+    eng: engagement(p),
+    hook: hookType(hookLine),
+    hookLine,
+    words,
+    lengthBucket: words < 40 ? 'short' : words < 150 ? 'medium' : 'long',
+    hasLink: /https?:\/\//.test(body),
+    emojiCount: (body.match(EMOJI) || []).length,
+  };
+}
+
+/** The yardsticks a post is measured against. */
+export type Baselines = {
+  authorMed: Map<string, number>;  // "source|author" → median engagement
+  authorN: Map<string, number>;    // "source|author" → post count
+  platMed: Map<string, number>;    // source → median engagement
+  platN: Map<string, number>;
+  pfMed: Map<string, number>;      // source → median engagement per follower
+};
+
+/** The key a creator's yardstick is filed under. */
+export const authorKey = (p: { source: string; author?: string }) =>
+  p.author ? p.source + '|' + p.author.toLowerCase() : '';
+
+/**
+ * Compute the yardsticks from a corpus.
+ *
+ * This is the one implementation both the analyzer and the read model use, so
+ * the materialized numbers and the live ones can never drift apart.
+ */
+export function computeBaselines(posts: Post[]): Baselines {
   const byAuthor = new Map<string, number[]>();
   const byPlat = new Map<string, number[]>();
   for (const p of posts) {
     const e = engagement(p);
-    if (p.author) {
-      const k = p.source + '|' + p.author.toLowerCase();
-      (byAuthor.get(k) || byAuthor.set(k, []).get(k)!).push(e);
-    }
+    const k = authorKey(p);
+    if (k) (byAuthor.get(k) || byAuthor.set(k, []).get(k)!).push(e);
     (byPlat.get(p.source) || byPlat.set(p.source, []).get(p.source)!).push(e);
   }
-  const authMed = new Map([...byAuthor].filter(([, v]) => v.length >= 3).map(([k, v]) => [k, median(v)]));
-  const platMed = new Map([...byPlat].map(([k, v]) => [k, median(v)]));
   // engagement-per-follower medians — the fair yardstick for one-off authors
   // (topic scans pull 1 post from many creators, so there is no creator median)
   // Only one-off posts (no creator baseline) form this yardstick: topic scans are
   // already filtered to viral posts, so comparing them to followed creators'
   // everyday posts would inflate scores into the thousands.
   const perFollower = new Map<string, number[]>();
-  const hasAuthorBase = (p: Post) => !!p.author && (byAuthor.get(p.source + '|' + p.author.toLowerCase())?.length ?? 0) >= 3;
+  const hasAuthorBase = (p: Post) => {
+    const k = authorKey(p);
+    return !!k && (byAuthor.get(k)?.length ?? 0) >= 3;
+  };
   for (const p of posts) if (p.authorFollowers && p.authorFollowers >= 100 && !hasAuthorBase(p)) {
     (perFollower.get(p.source) || perFollower.set(p.source, []).get(p.source)!).push(engagement(p) / p.authorFollowers);
   }
-  const pfMed = new Map([...perFollower].filter(([, v]) => v.length >= 10).map(([k, v]) => [k, median(v)]));
+  return {
+    authorMed: new Map([...byAuthor].map(([k, v]) => [k, median(v)])),
+    authorN: new Map([...byAuthor].map(([k, v]) => [k, v.length])),
+    platMed: new Map([...byPlat].map(([k, v]) => [k, median(v)])),
+    platN: new Map([...byPlat].map(([k, v]) => [k, v.length])),
+    pfMed: new Map([...perFollower].filter(([, v]) => v.length >= 10).map(([k, v]) => [k, median(v)])),
+  };
+}
 
+/**
+ * How far a post beat its creator's normal.
+ *
+ * Three yardsticks, in order of how personal they are: the creator's own
+ * median (needs 3+ posts), the creator's engagement-per-follower against the
+ * platform's, or the platform's raw median.
+ */
+export function outlierOf(
+  p: { source: string; author?: string; authorFollowers?: number; eng: number },
+  b: Baselines,
+): { outlier: number; baseline: 'author' | 'audience' | 'platform' } {
+  const k = authorKey(p);
+  const aBase = k ? b.authorMed.get(k) : undefined;
+  const hasAuthorBase = !!k && (b.authorN.get(k) ?? 0) >= 3;
+  const pf = b.pfMed.get(p.source);
+  if (hasAuthorBase && aBase != null) return { outlier: p.eng / Math.max(1, aBase), baseline: 'author' };
+  if (pf && p.authorFollowers && p.authorFollowers >= 100) {
+    return { outlier: p.eng / p.authorFollowers / pf, baseline: 'audience' };
+  }
+  return { outlier: p.eng / Math.max(1, b.platMed.get(p.source) ?? 1), baseline: 'platform' };
+}
+
+export function analyze(posts: Post[], tz = systemTimezone()): Analyzed[] {
+  const base = computeBaselines(posts);
   return posts.map(p => {
-    const eng = engagement(p);
-    const body = p.body || p.text || p.title || '';
-    const hookLine = (body.split('\n').map(s => s.trim()).find(Boolean) || p.title || '').slice(0, 240);
-    const aKey = p.author ? p.source + '|' + p.author.toLowerCase() : '';
-    const aBase = aKey ? authMed.get(aKey) : undefined;
-    const pf = pfMed.get(p.source);
-    let outlier: number, baseline: Analyzed['baseline'];
-    if (aBase != null) { outlier = eng / Math.max(1, aBase); baseline = 'author'; }
-    else if (pf && p.authorFollowers && p.authorFollowers >= 100) { outlier = eng / p.authorFollowers / pf; baseline = 'audience'; }
-    else { outlier = eng / Math.max(1, platMed.get(p.source) ?? 1); baseline = 'platform'; }
-    const words = body.split(/\s+/).filter(Boolean).length;
+    const d = derive(p);
+    const { outlier, baseline } = outlierOf({ ...p, eng: d.eng }, base);
     return {
       ...p,
-      eng,
-      er: p.views ? eng / p.views : p.authorFollowers ? eng / p.authorFollowers : null,
+      eng: d.eng,
+      er: p.views ? d.eng / p.views : p.authorFollowers ? d.eng / p.authorFollowers : null,
       outlier: Math.round(outlier * 100) / 100,
       baseline,
-      hook: hookType(hookLine),
-      hookLine,
-      words,
-      lengthBucket: words < 40 ? 'short' : words < 150 ? 'medium' : 'long',
-      hasLink: /https?:\/\//.test(body),
-      emojiCount: (body.match(EMOJI) || []).length,
+      hook: d.hook,
+      hookLine: d.hookLine,
+      words: d.words,
+      lengthBucket: d.lengthBucket,
+      hasLink: d.hasLink,
+      emojiCount: d.emojiCount,
       hour: hourInTz(p.created, tz),
       weekday: weekdayInTz(p.created, tz),
       niche: !!(p.security || p.dev),

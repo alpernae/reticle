@@ -3,7 +3,7 @@
 // The AI reads a SQL-backed digest of the whole database (source mix, rising
 // topics, top-engaged posts, posting-hour histogram, hook patterns) and writes
 // a short factual brief. The result is stored in the meta table and re-served
-// by /api/state until the next run. If every AI lane is out of quota, a
+// by /api/overview until the next run. If every AI lane is out of quota, a
 // rules-based stats summary is stored instead (mode 'stats').
 import 'server-only';
 import { analysisDigest, digestText, statsSummary, markAnalysis, markAI } from '../engine';

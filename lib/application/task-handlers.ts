@@ -97,6 +97,10 @@ const ingest: TaskHandler = {
     }
     ctx.step(`Imported ${out.result.added} new posts (${out.result.updated} refreshed)`);
     if (out.note) ctx.log(out.note);
+    // the analytics are stale now — rebuild them in a task (debounced)
+    if (out.result.added || out.result.updated) {
+      try { (await import('./analytics')).scheduleRebuild(); } catch { /* the worker catches up on the next boot */ }
+    }
     return { status: 'done', output: { runId, items: out.items, ...out.result, ...(out.note ? { note: out.note } : {}) } };
   },
 };
@@ -255,9 +259,28 @@ const brief: TaskHandler = {
   },
 };
 
+/**
+ * `analytics` — rebuild the analytics read model (ADR-004).
+ *
+ * The derived post columns, the baselines and the snapshot are computed here,
+ * in a task — never on a request path. Writes bump the data version and queue
+ * this task (debounced), so several imports in a row cause one rebuild.
+ */
+const analytics: TaskHandler = {
+  resource: 'analytics',
+  limit: 1,
+  async run(ctx: TaskCtx): Promise<TaskResult> {
+    const { rebuild } = await import('./analytics');
+    ctx.step('Recomputing the analytics');
+    const out = rebuild();
+    ctx.step(`Analyzed ${out.posts} posts`);
+    return { status: 'done', output: out };
+  },
+};
+
 /** Every task kind the worker knows how to run. */
 export const HANDLERS: Record<string, TaskHandler> = {
-  collect, ingest, generate, tool, workflow, automation,
+  collect, ingest, generate, tool, workflow, automation, analytics,
   'format-quick': formatQuick,
   'format-polish': formatPolish,
   brief,

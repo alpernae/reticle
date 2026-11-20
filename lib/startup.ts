@@ -65,9 +65,25 @@ export function startScheduler() {
     finally { pollingApify = false; }
   };
 
+  // The analytics snapshot (ADR-004) goes stale on its own: the "last 48 h"
+  // windows move even when no data changes. It is refreshed every 15 minutes,
+  // in a task — never on a request.
+  let lastAnalyticsCheck = 0;
+  const refreshAnalytics = async () => {
+    if (Date.now() - lastAnalyticsCheck < 15 * 60 * 1000) return;
+    lastAnalyticsCheck = Date.now();
+    try {
+      const { currentSnapshot } = await import('./analytics-read');
+      if (currentSnapshot()) return; // still current
+      const { scheduleRebuild } = await import('./application/analytics');
+      scheduleRebuild(1_000);
+    } catch { /* the worker will catch up */ }
+  };
+
   void (async () => {
     const tick = async () => {
       await pollApify();
+      await refreshAnalytics();
       try {
         // the scheduler runs in-process — no HTTP hop, no scheduler key
         const { runDue } = await import('./automations');

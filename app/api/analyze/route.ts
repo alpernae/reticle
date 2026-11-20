@@ -1,8 +1,8 @@
 // app/api/analyze/route.ts — HTTP adapter for the Overview growth brief.
 //
 // The brief is a durable task (kind "brief"): the route enqueues it and waits
-// for the worker. The result is stored in the meta table and re-served by
-// /api/state until the next run.
+// for the worker. The result is stored in the app state and re-served by
+// /api/overview until the next run.
 import { runTaskAndReply } from '@/lib/http/task-shim';
 import { route } from '@/lib/http/route';
 

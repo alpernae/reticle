@@ -4,7 +4,7 @@
 // results to the Generate page. All state comes from /api/jobs polling.
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Card, CardHead, Chip, PageHead, useApiState, btn, btnPrimary, inputCls, labelCls, AGO } from '@/components/panel';
+import { Card, CardHead, Chip, PageHead, useApi, btn, btnPrimary, inputCls, labelCls, AGO } from '@/components/panel';
 import {
   Bot, Telescope, Crosshair, CalendarDays, ScanEye, Microscope, Play, Pause, Square,
   Trash2, Check, X, Minus, Copy, ArrowUpRight,
@@ -63,7 +63,8 @@ function StepRow({ s }: { s: Step }) {
 
 export default function Studio() {
   const router = useRouter();
-  const { data: d } = useApiState();
+  const { data: summary } = useApi<{ manualCount: number }>('/api/summary');
+  const { data: topicData } = useApi<{ topics: { name: string; fresh: number }[] }>('/api/topics');
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [jobs, setJobs] = useState<Job[] | null>(null);
   const [kind, setKind] = useState('dive');
@@ -84,10 +85,10 @@ export default function Studio() {
   }, []);
 
   useEffect(() => { poll(); const t = setInterval(poll, 1500); return () => clearInterval(t); }, [poll]);
-  useEffect(() => { if (!topic && d?.topics?.length) setTopic(d.topics.find((t: any) => t.fresh > 0)?.name || ''); }, [d?.topics?.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!topic && topicData?.topics?.length) setTopic(topicData.topics.find((t: any) => t.fresh > 0)?.name || ''); }, [topicData?.topics?.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const def = catalog.find(c => c.kind === kind);
-  const winnersCount = d?.manual?.length || 0;
+  const winnersCount = summary?.manualCount || 0;
   const blocked = def?.needsWinners && !winnersCount;
   const active = (jobs || []).filter(j => ['queued', 'running', 'paused'].includes(j.status));
 
@@ -179,7 +180,7 @@ export default function Studio() {
               <div>
                 <label className={labelCls} htmlFor="j-topic">Topic</label>
                 <input id="j-topic" className={selCls} placeholder="e.g. AI & LLMs — or anything" value={topic} onChange={e => setTopic(e.target.value)} list="j-topics" />
-                <datalist id="j-topics">{(d?.topics || []).filter((t: any) => t.fresh > 0).map((t: any) => <option key={t.name} value={t.name} />)}</datalist>
+                <datalist id="j-topics">{(topicData?.topics || []).filter((t: any) => t.fresh > 0).map((t: any) => <option key={t.name} value={t.name} />)}</datalist>
               </div>
               <div>
                 <label className={labelCls} htmlFor="j-platform">Platform</label>

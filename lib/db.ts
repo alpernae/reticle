@@ -138,6 +138,149 @@ export class SocialDB {
   }
   allPosts(): PostRow[] { return this.prep('SELECT * FROM posts').all() as unknown as PostRow[]; }
 
+  // ---- analytics read model (ADR-004) ----
+  /** The columns the read model needs — not every column (the body can be 5 KB). */
+  analyticsPostRows(): {
+    id: string; source: string; title: string; text: string; link: string; score: number; comments: number;
+    created: number; topics: string; security: number; dev: number; views: number | null;
+    author: string | null; authorFollowers: number | null; authorLocation: string | null;
+    shares: number | null; saves: number | null; media: string | null; hashtags: string | null;
+    body: string | null; durationSec: number | null;
+  }[] {
+    return this.prep(`SELECT id, source, title, text, link, score, comments, created, topics, security, dev,
+      views, author, authorFollowers, authorLocation, shares, saves, media, hashtags, body, durationSec
+      FROM posts`).all() as unknown as ReturnType<SocialDB['analyticsPostRows']>;
+  }
+  /** Write the derived facts of one post (engagement, hook, length, outlier …).
+   *  A null outlier means "no yardstick yet" — the rebuild fills it in. */
+  setPostDerived(id: string, d: {
+    eng: number; hook: string; hookLine: string; words: number; lengthBucket: string;
+    hasLink: number; emojiCount: number; outlier?: number | null; baseline?: string | null; analyzedAt: number;
+  }) {
+    if (d.outlier == null) {
+      this.prep(`UPDATE posts SET eng = ?, hook = ?, hookLine = ?, words = ?, lengthBucket = ?,
+        hasLink = ?, emojiCount = ?, analyzedAt = ? WHERE id = ?`)
+        .run(d.eng, d.hook, d.hookLine, d.words, d.lengthBucket, d.hasLink, d.emojiCount, d.analyzedAt, id);
+      return;
+    }
+    this.prep(`UPDATE posts SET eng = ?, hook = ?, hookLine = ?, words = ?, lengthBucket = ?,
+      hasLink = ?, emojiCount = ?, outlier = ?, baseline = ?, analyzedAt = ? WHERE id = ?`)
+      .run(d.eng, d.hook, d.hookLine, d.words, d.lengthBucket, d.hasLink, d.emojiCount,
+        d.outlier, d.baseline ?? 'platform', d.analyzedAt, id);
+  }
+  /** Replace the whole author baseline table (it is rebuilt from the posts). */
+  replaceAuthorBaselines(rows: { source: string; author: string; n: number; medianEng: number; updated: number }[]) {
+    this.prep('DELETE FROM author_baselines').run();
+    const ins = this.prep('INSERT INTO author_baselines (source, author, n, median_eng, updated) VALUES (?, ?, ?, ?, ?)');
+    for (const r of rows) ins.run(r.source, r.author, r.n, r.medianEng, r.updated);
+  }
+  replacePlatformBaselines(rows: { source: string; n: number; medianEng: number; medianPerFollower: number; updated: number }[]) {
+    this.prep('DELETE FROM platform_baselines').run();
+    const ins = this.prep('INSERT INTO platform_baselines (source, n, median_eng, median_per_follower, updated) VALUES (?, ?, ?, ?, ?)');
+    for (const r of rows) ins.run(r.source, r.n, r.medianEng, r.medianPerFollower, r.updated);
+  }
+  readAnalyticsSnapshot(): { version: number; computedAt: number; tz: string; payload: string } | undefined {
+    const r = this.prep('SELECT version, computed_at, tz, payload FROM analytics_snapshot WHERE id = 1').get() as
+      | { version: number; computed_at: number; tz: string; payload: string } | undefined;
+    if (!r) return undefined;
+    return { version: r.version, computedAt: r.computed_at, tz: r.tz, payload: r.payload };
+  }
+  writeAnalyticsSnapshot(s: { version: number; computedAt: number; tz: string; payload: string }) {
+    this.prep(`INSERT INTO analytics_snapshot (id, version, computed_at, tz, payload) VALUES (1, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET version = excluded.version, computed_at = excluded.computed_at,
+      tz = excluded.tz, payload = excluded.payload`)
+      .run(s.version, s.computedAt, s.tz, s.payload);
+  }
+  /**
+   * The timing + outlier facts of every post, straight from the derived
+   * columns. The Best-time card and the Feed read this instead of running the
+   * analyzer on every request.
+   */
+  outlierRows(): {
+    id: string; source: string; title: string; link: string; created: number; outlier: number;
+    author: string | null; authorLocation: string | null;
+  }[] {
+    return this.prep(`SELECT id, source, title, link, created, COALESCE(outlier, 0) AS outlier,
+      author, authorLocation FROM posts WHERE created > 0`).all() as unknown as ReturnType<SocialDB['outlierRows']>;
+  }
+
+  /**
+   * The posts that carry an outlier score, newest first — the feed and best-time card read this. */
+  rankedPostRows(limit: number, source?: string): {
+    id: string; source: string; title: string; link: string; score: number; comments: number; created: number;
+    outlier: number; eng: number; hook: string; words: number; lengthBucket: string; hasLink: number;
+    emojiCount: number; author: string | null; authorFollowers: number | null; authorLocation: string | null;
+    media: string | null; hashtags: string | null; body: string | null; views: number | null; shares: number | null; saves: number | null;
+  }[] {
+    const where = source ? 'WHERE source = ?' : '';
+    const args = source ? [source, limit] : [limit];
+    return this.prep(`SELECT id, source, title, link, score, comments, created, outlier, eng, hook, words,
+      lengthBucket, hasLink, emojiCount, author, authorFollowers, authorLocation, media, hashtags, body, views, shares, saves
+      FROM posts ${where} ORDER BY outlier DESC, eng DESC LIMIT ?`).all(...args) as unknown as ReturnType<SocialDB['rankedPostRows']>;
+  }
+
+  // ---- page-scoped reads (ADR-004) ----
+  /** Run a read query with bound parameters (prepared statements are cached by SQL text). */
+  queryAll<T = any>(sql: string, args: any[] = []): T[] { return this.prep(sql).all(...args) as unknown as T[]; }
+  queryOne<T = any>(sql: string, args: any[] = []): T | undefined { return this.prep(sql).get(...args) as unknown as T | undefined; }
+
+  /**
+   * The compact post projection the read endpoints serve: no body, no
+   * classifier text, no hashtags — only the facts a page renders.
+   */
+  compactPostRows(): {
+    id: string; source: string; title: string; link: string; score: number; comments: number;
+    created: number; security: number; topics: string; aiCats: string | null; views: number | null;
+    author: string | null; authorFollowers: number | null; authorLocation: string | null; media: string | null;
+    eng: number | null; outlier: number | null;
+  }[] {
+    return this.prep(`SELECT id, source, title, link, score, comments, created, security, topics, aiCats,
+      views, author, authorFollowers, authorLocation, media, eng, outlier FROM posts WHERE created > 0`).all() as unknown as
+      ReturnType<SocialDB['compactPostRows']>;
+  }
+
+  /**
+   * The analyzed projection, straight from the derived columns (ADR-004).
+   * The winners/patterns page reads this instead of running the analyzer on
+   * every request.
+   */
+  analyzedPostRows(): {
+    id: string; source: string; title: string; text: string; link: string; score: number; comments: number;
+    created: number; topics: string; aiCats: string | null; security: number; dev: number; views: number | null;
+    author: string | null; authorFollowers: number | null; authorLocation: string | null;
+    shares: number | null; saves: number | null; media: string | null; hashtags: string | null; body: string | null;
+    durationSec: number | null; eng: number | null; outlier: number | null; baseline: string | null;
+    hook: string | null; hookLine: string | null; words: number | null; lengthBucket: string | null;
+    hasLink: number | null; emojiCount: number | null;
+  }[] {
+    return this.prep(`SELECT id, source, title, text, link, score, comments, created, topics, aiCats, security, dev,
+      views, author, authorFollowers, authorLocation, shares, saves, media, hashtags, body, durationSec,
+      eng, outlier, baseline, hook, hookLine, words, lengthBucket, hasLink, emojiCount FROM posts`).all() as unknown as
+      ReturnType<SocialDB['analyzedPostRows']>;
+  }
+
+  /** How many posts per source — the platform tabs. */  sourceCounts(): Record<string, number> {
+    const rows = this.prep('SELECT source, COUNT(*) c FROM posts GROUP BY source').all() as { source: string; c: number }[];
+    const out: Record<string, number> = {};
+    for (const r of rows) out[r.source] = r.c;
+    return out;
+  }
+
+  /** How many posts still miss their derived facts (the read model has not caught up). */
+  countUnanalyzed(): number {
+    return (this.prep('SELECT COUNT(*) c FROM posts WHERE eng IS NULL').get() as { c: number }).c;
+  }
+
+  /** The stored yardsticks — what an imported post is measured against. */
+  readAuthorBaselines(): { source: string; author: string; n: number; medianEng: number }[] {
+    return this.prep('SELECT source, author, n, median_eng AS medianEng FROM author_baselines').all() as
+      { source: string; author: string; n: number; medianEng: number }[];
+  }
+  readPlatformBaselines(): { source: string; n: number; medianEng: number; medianPerFollower: number }[] {
+    return this.prep('SELECT source, n, median_eng AS medianEng, median_per_follower AS medianPerFollower FROM platform_baselines').all() as
+      { source: string; n: number; medianEng: number; medianPerFollower: number }[];
+  }
+
   // ---- manual (my results) ----
   addManual(m: { id: number; platform: string; text: string; eng: number; when: string; ts: number; likes?: number | null; comments?: number | null; views?: number | null }) {
     this.prep('INSERT INTO manual (id, platform, text, eng, "when", ts, likes, comments, views) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
@@ -159,6 +302,8 @@ export class SocialDB {
   allManual(): { id: number; platform: string; text: string; eng: number; when: string; ts: number; likes: number | null; comments: number | null; views: number | null }[] {
     return this.prep('SELECT id, platform, text, eng, "when", ts, likes, comments, views FROM manual ORDER BY ts DESC').all() as unknown as { id: number; platform: string; text: string; eng: number; when: string; ts: number; likes: number | null; comments: number | null; views: number | null }[];
   }
+  /** How many results the user has logged. */
+  countManual(): number { return (this.prep('SELECT COUNT(*) c FROM manual').get() as { c: number }).c; }
 
   // ---- meta (lastCollect, lastAI, lastGoodModel, lastAnalysis) ----
   getMeta(key: string): string | null {

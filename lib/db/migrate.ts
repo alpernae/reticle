@@ -14,10 +14,11 @@ import * as mindmaps from './migrations/006-mindmaps';
 import * as trackers from './migrations/007-trackers';
 import * as tasks from './migrations/008-tasks';
 import * as unifyTasks from './migrations/009-unify-tasks';
+import * as analytics from './migrations/010-analytics';
 
 export type Migration = { version: number; name: string; up(db: DatabaseSync): void };
 
-const MIGRATIONS: Migration[] = [initial, secrets, settings, operational, providerHealth, mindmaps, trackers, tasks, unifyTasks];
+const MIGRATIONS: Migration[] = [initial, secrets, settings, operational, providerHealth, mindmaps, trackers, tasks, unifyTasks, analytics];
 export const MIGRATION_VERSION = Math.max(...MIGRATIONS.map(m => m.version));
 
 /** Current PRAGMA user_version (0 = never migrated). */
