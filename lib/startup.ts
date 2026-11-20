@@ -80,10 +80,24 @@ export function startScheduler() {
     } catch { /* the worker will catch up */ }
   };
 
+  // The nightly backup (phase 4e): one recurring task that writes a consistent
+  // copy of the database. The scheduler only makes sure it exists — the task
+  // reschedules itself after every run.
+  let lastBackupCheck = 0;
+  const ensureBackup = async () => {
+    if (Date.now() - lastBackupCheck < 60 * 60 * 1000) return;
+    lastBackupCheck = Date.now();
+    try {
+      const { ensureBackupTask } = await import('./application/backup');
+      ensureBackupTask();
+    } catch { /* the worker will catch up */ }
+  };
+
   void (async () => {
     const tick = async () => {
       await pollApify();
       await refreshAnalytics();
+      await ensureBackup();
       try {
         // the scheduler runs in-process — no HTTP hop, no scheduler key
         const { runDue } = await import('./automations');

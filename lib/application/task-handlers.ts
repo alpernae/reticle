@@ -278,9 +278,34 @@ const analytics: TaskHandler = {
   },
 };
 
+/**
+ * `backup` — write a consistent copy of the database.
+ *
+ * `VACUUM INTO` produces one clean file (no WAL sidecar) while the app keeps
+ * running. After a nightly run the task goes back to 'waiting' with the next
+ * 03:00, so there is one recurring backup row; a manual run just finishes.
+ */
+const backup: TaskHandler = {
+  resource: 'backup',
+  limit: 1,
+  async run(ctx: TaskCtx): Promise<TaskResult> {
+    const { runBackup } = await import('../backup');
+    const { nextBackupAt } = await import('./backup');
+    ctx.step('Writing the database backup');
+    const out = runBackup();
+    ctx.step(`Wrote ${out.name} (${Math.round(out.bytes / 1024)} KB)`);
+    if (out.pruned.length) ctx.log(`Removed ${out.pruned.length} old backup(s)`, { pruned: out.pruned });
+    const manual = !!ctx.input?.manual;
+    if (manual) return { status: 'done', output: out };
+    const nextAt = nextBackupAt(Date.now());
+    ctx.log(`Next backup ${new Date(nextAt).toLocaleString('en-US')}`);
+    return { status: 'waiting', runAfter: nextAt, output: out };
+  },
+};
+
 /** Every task kind the worker knows how to run. */
 export const HANDLERS: Record<string, TaskHandler> = {
-  collect, ingest, generate, tool, workflow, automation, analytics,
+  collect, ingest, generate, tool, workflow, automation, analytics, backup,
   'format-quick': formatQuick,
   'format-polish': formatPolish,
   brief,

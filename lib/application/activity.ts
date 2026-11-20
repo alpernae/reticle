@@ -37,3 +37,26 @@ export function taskToRun(t: Task, events?: TaskEvent[]): ActivityRun {
 export function activityRuns(limit = 300): ActivityRun[] {
   return listTasks({ limit }).map(t => taskToRun(t)).sort((a, b) => b.created - a.created);
 }
+
+/** The statuses that mean "this task is still going". */
+export const ACTIVE_STATUSES = ['running', 'queued', 'paused', 'waiting'];
+
+export type ActivitySummary = {
+  running: number;
+  active: string[];   // the ids of the running tasks
+  recent: { id: string; kind: string; page: string | null; title: string; status: string; error?: string | null; ms?: number | null }[];
+};
+
+/**
+ * The cheap summary the shell polls for today: how many tasks run, which
+ * ones, and what finished in the last two minutes. The live event stream
+ * (`/api/events`) pushes exactly this, so both paths read one implementation.
+ */
+export function activitySummary(limit = 100): ActivitySummary {
+  const runs = activityRuns(limit);
+  const running = runs.filter(r => ACTIVE_STATUSES.includes(r.status)).length;
+  const recent = runs
+    .filter(r => r.finished && Date.now() - r.finished < 120_000)
+    .map(r => ({ id: r.id, kind: r.kind, page: r.page, title: r.title, status: r.status, error: r.error, ms: r.ms }));
+  return { running, recent, active: runs.filter(r => r.status === 'running').map(r => r.id) };
+}

@@ -14,7 +14,8 @@ import { CommandMenu } from '@/components/command-menu';
 import { AskDock } from '@/components/ask-dock';
 import { BRAND } from '@/lib/brand';
 import { Toast } from '@/components/panelui/toast';
-import { RunToasts, pokeActivity, subscribeActivity, toaster } from '@/components/toaster';
+import { RunToasts, toaster } from '@/components/toaster';
+import { pokeActivity, subscribeActivity } from '@/components/live';
 import { AIUsage } from '@/components/ai-usage';
 
 // ---------- formatting ----------

@@ -10,7 +10,7 @@
 import { NextResponse, connection } from 'next/server';
 import { getStore } from '@/lib/db';
 import { cancelTask, deleteTask, getTask } from '@/lib/application/tasks';
-import { activityRuns, taskToRun } from '@/lib/application/activity';
+import { activityRuns, activitySummary, taskToRun } from '@/lib/application/activity';
 import { route } from '@/lib/http/route';
 
 const ACTIVE = ['running', 'queued', 'paused', 'waiting'];
@@ -21,12 +21,7 @@ const handler_GET = async (req: Request) => {
   const id = params.get('id');
 
   if (params.get('summary')) { // cheap poll for the sidebar / top-bar badge
-    const runs = activityRuns(100);
-    const running = runs.filter(r => ACTIVE.includes(r.status)).length;
-    // runs that finished in the last 2 minutes — the shell toasts the ones it saw start
-    const recent = runs.filter(r => r.finished && Date.now() - r.finished < 120_000)
-      .map(r => ({ id: r.id, kind: r.kind, page: r.page, title: r.title, status: r.status, error: r.error, ms: r.ms }));
-    return NextResponse.json({ running, recent, active: runs.filter(r => r.status === 'running').map(r => r.id) });
+    return NextResponse.json(activitySummary(100));
   }
 
   if (id) {

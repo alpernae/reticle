@@ -7,6 +7,7 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { PageHead, btn, btnPrimary } from '@/components/panel';
+import { subscribeActivity } from '@/components/live';
 import { Toolbar, ToolRow, Segmented, Stats, Tabs, Empty } from '@/components/kit';
 import { RunFlow } from '@/components/run-flow';
 import { FitBadge } from '@/components/fit-badge';
@@ -85,7 +86,10 @@ export default function Activity() {
     load();
   }, [load]);
   const anyActive = !!runs?.some(r => ACTIVE.has(r.status));
-  useEffect(() => { const t = setInterval(load, anyActive ? 2000 : 10000); return () => clearInterval(t); }, [load, anyActive]);
+  // the live stream reloads the list when a task changes; the slow poll is the
+  // safety net for a browser that cannot keep the stream open
+  useEffect(() => subscribeActivity(() => { load(); }), [load]);
+  useEffect(() => { const t = setInterval(load, anyActive ? 10_000 : 30_000); return () => clearInterval(t); }, [load, anyActive]);
   useEffect(() => { setNow(Date.now()); const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
 
   // open the newest run when nothing is picked, so the right side is never empty

@@ -4,7 +4,7 @@
 // locally. DB facts come from /api/settings; token writes go through /api/apify.
 import { useCallback, useEffect, useState } from 'react';
 import { Card, CardHead, Chip, PageHead, btn, btnPrimary, inputCls, labelCls } from '@/components/panel';
-import { Database, KeyRound, Info, ExternalLink, Globe } from 'lucide-react';
+import { Database, KeyRound, Info, ExternalLink, Globe, ShieldCheck } from 'lucide-react';
 import { AISettings } from '@/components/ai-settings';
 import { PlaybookEditor } from '@/components/playbook-editor';
 import { Spinner } from '@/components/panelui/spinner';
@@ -27,6 +27,7 @@ type ApifyStatus = {
 };
 type TzInfo = { saved: string | null; current: string; detected: string; options: string[] };
 type Data = { db: DbStats; apify: ApifyStatus; timezone: TzInfo } | null;
+type Backup = { name: string; bytes: number; at: number };
 
 const kfmtBytes = (n: number) => (n >= 1e6 ? (n / 1e6).toFixed(1) + ' MB' : n >= 1e3 ? Math.round(n / 1e3) + ' KB' : n + ' B');
 const fmtN = (v: unknown) => (typeof v === 'number' && isFinite(v) ? v.toLocaleString('en-US') : '0');
@@ -39,6 +40,30 @@ export default function Settings() {
   const [tzIn, setTzIn] = useState('');
   const [tzMsg, setTzMsg] = useState<string | null>(null);
   const [busyTz, setBusyTz] = useState(false);
+  const [backups, setBackups] = useState<Backup[]>([]);
+  const [backupMsg, setBackupMsg] = useState<string | null>(null);
+  const [busyBackup, setBusyBackup] = useState(false);
+
+  const loadBackups = useCallback(async () => {
+    try {
+      const j = await (await fetch('/api/backup')).json();
+      setBackups(j.backups || []);
+    } catch {}
+  }, []);
+  useEffect(() => { loadBackups(); }, [loadBackups]);
+
+  const doBackup = async () => {
+    setBusyBackup(true);
+    setBackupMsg(null);
+    try {
+      const j = await (await fetch('/api/backup', { method: 'POST' })).json();
+      setBackupMsg(j.error ? j.error : `Wrote ${j.name || 'the backup'} · ${kfmtBytes(Number(j.bytes) || 0)}`);
+      loadBackups();
+    } catch (e: any) {
+      setBackupMsg(String(e?.message || 'the backup failed'));
+    }
+    setBusyBackup(false);
+  };
 
   const load = useCallback(async () => {
     try {
@@ -209,6 +234,36 @@ export default function Settings() {
             </div>
           </div>
         )}
+      </Card>
+
+      {/* ---- backups ---- */}
+      <Card>
+        <CardHead
+          title="Backups"
+          sub="a clean copy of the database, written while the app keeps running — one per night, plus any you take by hand"
+          right={
+            <button onClick={doBackup} disabled={busyBackup} className={btn}>
+              {busyBackup ? 'Backing up…' : 'Back up now'}
+            </button>
+          }
+        />
+        <div className="p-4 pt-0 space-y-2">
+          {backupMsg && <div className="text-[12px] text-muted-foreground">{backupMsg}</div>}
+          {backups.length ? (
+            <ul className="space-y-1">
+              {backups.map(b => (
+                <li key={b.name} className="flex items-center gap-2 text-[12px]">
+                  <ShieldCheck className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                  <code className="font-mono truncate">{b.name}</code>
+                  <span className="ml-auto text-muted-foreground tabular-nums">{kfmtBytes(b.bytes)}</span>
+                  <span className="text-muted-foreground">{new Date(b.at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="text-[12px] text-muted-foreground">No backup yet — one is taken every night at 03:00, and the newest seven are kept.</div>
+          )}
+        </div>
       </Card>
     </div>
   );
