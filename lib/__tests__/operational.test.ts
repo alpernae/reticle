@@ -10,6 +10,7 @@ let cache: typeof import('../cache');
 let ai: typeof import('../ai');
 let appState: typeof import('../app-state');
 let mindmaps: typeof import('../mindmaps');
+let trackers: typeof import('../trackers');
 
 beforeAll(async () => {
   process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'reticle-operational-'));
@@ -20,6 +21,7 @@ beforeAll(async () => {
   ai = await import('../ai');
   appState = await import('../app-state');
   mindmaps = await import('../mindmaps');
+  trackers = await import('../trackers');
 });
 
 describe('automations table', () => {
@@ -154,8 +156,7 @@ describe('app state table', () => {
   });
 });
 
-describe('mindmaps table', () => {
-  it('moves legacy meta.mindmaps into rows once', () => {
+describe('mindmaps table', () => {  it('moves legacy meta.mindmaps into rows once', () => {
     const store = db.getStore();
     store.setMeta('mindmaps', JSON.stringify([{
       id: 'map1', title: 'Old map',
@@ -186,5 +187,30 @@ describe('mindmaps table', () => {
     mindmaps.deleteMap(saved.id);
     expect(store.getMindMapRow(saved.id)).toBeUndefined();
     expect(mindmaps.listMaps()).toHaveLength(1);
+  });
+});
+
+describe('trackers table', () => {
+  it('moves legacy meta.trackers into rows once', () => {
+    const store = db.getStore();
+    store.setMeta('trackers', JSON.stringify([{
+      id: 't1', preset: 'bounty', name: 'Bounty grind', project: '', startDate: '2026-01-01',
+      totalDays: 365, headline: 'Day {day}/{total}', hashtags: '#bugbounty', fields: [], values: {}, log: [],
+    }]));
+
+    expect(trackers.listTrackers()).toHaveLength(1);
+    expect(store.getMeta('trackers')).toBe('');
+    expect(store.getTrackerRow('t1')?.name).toBe('Bounty grind');
+    expect(trackers.listTrackers()).toHaveLength(1); // idempotent
+  });
+
+  it('replaces the saved set when the client saves the whole list', () => {
+    const store = db.getStore();
+    const saved = trackers.saveTrackers([{ id: 't2', name: 'Build in public', totalDays: 100 }]);
+
+    expect(saved).toHaveLength(1);
+    expect(store.getTrackerRow('t1')).toBeUndefined(); // dropped from the set
+    expect(trackers.listTrackers().map(t => t.id)).toEqual(['t2']);
+    expect(trackers.listTrackers()[0]).toMatchObject({ name: 'Build in public', totalDays: 100 });
   });
 });

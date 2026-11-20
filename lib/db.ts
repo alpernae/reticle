@@ -52,6 +52,10 @@ export type ProviderHealthRow = {
 export type MindMapRow = {
   id: string; title: string; nodes: string; edges: string; created: number; updated: number;
 };
+export type TrackerRow = {
+  id: string; preset: string; name: string; project: string; startDate: string; totalDays: number;
+  headline: string; hashtags: string; fields: string; values: string; log: string; created: number; updated: number;
+};
 
 /** Depth of the current transaction on this connection (SQLite has one). */
 let txDepth = 0;
@@ -276,6 +280,35 @@ export class SocialDB {
       .run(m.id, m.title, m.nodes, m.edges, m.created, m.updated);
   }
   deleteMindMapRow(id: string) { this.prep('DELETE FROM mindmaps WHERE id = ?').run(id); }
+
+  // ---- trackers (series trackers; fields/values/log JSON columns) ----
+  listTrackerRows(): TrackerRow[] {
+    return this.prep(`SELECT id, preset, name, project, start_date AS startDate, total_days AS totalDays,
+      headline, hashtags, fields, vals AS "values", log, created, updated FROM trackers ORDER BY created DESC`)
+      .all() as unknown as TrackerRow[];
+  }
+  getTrackerRow(id: string): TrackerRow | undefined {
+    return this.prep(`SELECT id, preset, name, project, start_date AS startDate, total_days AS totalDays,
+      headline, hashtags, fields, vals AS "values", log, created, updated FROM trackers WHERE id = ?`)
+      .get(id) as TrackerRow | undefined;
+  }
+  upsertTrackerRow(t: TrackerRow) {
+    this.prep(`INSERT INTO trackers (id, preset, name, project, start_date, total_days, headline, hashtags, fields, vals, log, created, updated)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET preset = excluded.preset, name = excluded.name, project = excluded.project,
+         start_date = excluded.start_date, total_days = excluded.total_days, headline = excluded.headline,
+         hashtags = excluded.hashtags, fields = excluded.fields, vals = excluded.vals, log = excluded.log,
+         created = excluded.created, updated = excluded.updated`)
+      .run(t.id, t.preset, t.name, t.project, t.startDate, t.totalDays, t.headline, t.hashtags,
+        t.fields, t.values, t.log, t.created, t.updated);
+  }
+  /** Drop trackers that are no longer in the saved set. */
+  deleteTrackersNotIn(ids: string[]) {
+    const keep = ids.filter(Boolean);
+    if (!keep.length) { this.prep('DELETE FROM trackers').run(); return; }
+    const marks = keep.map(() => '?').join(',');
+    this.prep(`DELETE FROM trackers WHERE id NOT IN (${marks})`).run(...keep);
+  }
 
   // ---- secrets (AES-256-GCM rows; encryption lives in lib/secrets.ts) ----
   getSecretRow(name: string): { ciphertext: string; iv: string; tag: string } | undefined {

@@ -1,8 +1,8 @@
 import { NextResponse, connection } from 'next/server';
-import { getStore } from '@/lib/db';
 import { smartAI } from '@/lib/aichain';
 import { tracked, RunCancelled } from '@/lib/activity';
-import { AUDIENCES, QUICK_FORMATS, type Tracker } from '@/lib/formats';
+import { AUDIENCES, QUICK_FORMATS } from '@/lib/formats';
+import { listTrackers, saveTrackers } from '@/lib/trackers';
 import { allPayload } from '@/lib/engine';
 import { analyze, winners } from '@/lib/domain/patterns';
 import { fitScorer } from '@/lib/domain/score';
@@ -11,12 +11,10 @@ import { route } from '@/lib/http/route';
 
 export const maxDuration = 200;
 
-const readTrackers = (): Tracker[] => { try { const v = JSON.parse(getStore().getMeta('trackers') || '[]'); return Array.isArray(v) ? v : []; } catch { return []; } };
-
 /** GET — saved series trackers. */
 const handler_GET = async () => {
   await connection(); // request-time: SQLite reads are sync, so without this Next prerenders & caches the response
-  return NextResponse.json({ trackers: readTrackers() });
+  return NextResponse.json({ trackers: listTrackers() });
 }
 
 /** POST { action: 'save', trackers } | { action: 'polish', text, model? } | { action: 'quick', format, audience, platform, count, idea?, model? } */
@@ -25,9 +23,8 @@ const handler_POST = async (req: Request) => {
   const pinned = body?.model?.providerID && body?.model?.id ? body.model : null;
 
   if (body?.action === 'save') {
-    const list = Array.isArray(body.trackers) ? body.trackers.slice(0, 20) : [];
-    getStore().setMeta('trackers', JSON.stringify(list).slice(0, 400_000));
-    return NextResponse.json({ trackers: readTrackers() });
+    const list = saveTrackers(Array.isArray(body.trackers) ? body.trackers : []);
+    return NextResponse.json({ trackers: list });
   }
 
   if (body?.action === 'polish') {
