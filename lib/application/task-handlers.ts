@@ -111,10 +111,12 @@ const generate: TaskHandler = {
   limit: 2,
   async run(ctx: TaskCtx): Promise<TaskResult> {
     const { generateDrafts } = await import('./drafts');
+    const { setTaskTitle } = await import('./tasks');
     ctx.step('Building the prompt from your winners');
-    const res = await generateDrafts(ctx.input || {}, { signal: ctx.signal });
-    if (res.status !== 200) return { status: 'failed', error: String((res.body as any)?.error || `generate failed (${res.status})`) };
-    ctx.step('Done');
+    const res = await generateDrafts(ctx.input || {}, ctx);
+    if (res.title) setTaskTitle(ctx.id, res.title);
+    if (res.failure) return { status: 'failed', error: res.failure, output: res };
+    if (res.status !== 200) return { status: 'failed', error: String((res.body as any)?.error || `generate failed (${res.status})`), output: res };
     return { status: 'done', output: res };
   },
 };
@@ -127,10 +129,12 @@ const tool: TaskHandler = {
   limit: 2,
   async run(ctx: TaskCtx): Promise<TaskResult> {
     const { runTool } = await import('./tools');
+    const { setTaskTitle } = await import('./tasks');
     ctx.step('Asking the AI');
-    const res = await runTool(ctx.input || {}, { signal: ctx.signal });
-    if (res.status !== 200) return { status: 'failed', error: String((res.body as any)?.error || `tool failed (${res.status})`) };
-    ctx.step('Done');
+    const res = await runTool(ctx.input || {}, ctx);
+    if (res.title) setTaskTitle(ctx.id, res.title);
+    if (res.failure) return { status: 'failed', error: res.failure, output: res };
+    if (res.status !== 200) return { status: 'failed', error: String((res.body as any)?.error || `tool failed (${res.status})`), output: res };
     return { status: 'done', output: res };
   },
 };

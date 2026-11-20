@@ -32,10 +32,6 @@ export type PostRow = {
   aiCats?: string | null;    // JSON array of category keys assigned by Claude (lib/categorize.ts)
 };
 export type MetaValue<T> = T | null;
-export type AiRunRow = {
-  id: string; kind: string; title: string; page: string; platform: string; status: string; steps: string;
-  provider: string; model: string; error: string; created: number; finished: number | null; ms: number | null;
-};
 export type AutomationRow = {
   id: string; name: string; description: string; enabled: number;
   steps: string; schedule: string; nextRun: number | null; lastRun: number | null;
@@ -464,64 +460,9 @@ export class SocialDB {
     this.prep('DELETE FROM sessions WHERE token = ?').run(token);
   }
 
-  // ---- jobs (async agent runs) ----
-  addJob(j: { id: string; kind: string; topic: string; platform: string; steps: string; created: number; model?: string }) {
-    this.prep('INSERT INTO jobs (id, kind, topic, platform, status, steps, result, err, created, started, finished, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(j.id, j.kind, j.topic, j.platform, 'queued', j.steps, '', '', j.created, null, null, j.model || '');
-  }
-  /** Whitelisted partial update — only these columns are ever written. */
-  saveJob(id: string, f: { status?: string; steps?: string; result?: string; err?: string; started?: number | null; finished?: number | null }) {
-    const cols: string[] = [], vals: any[] = [];
-    if (f.status !== undefined) { cols.push('status = ?'); vals.push(f.status); }
-    if (f.steps !== undefined) { cols.push('steps = ?'); vals.push(f.steps); }
-    if (f.result !== undefined) { cols.push('result = ?'); vals.push(f.result); }
-    if (f.err !== undefined) { cols.push('err = ?'); vals.push(f.err); }
-    if (f.started !== undefined) { cols.push('started = ?'); vals.push(f.started); }
-    if (f.finished !== undefined) { cols.push('finished = ?'); vals.push(f.finished); }
-    if (!cols.length) return;
-    vals.push(id);
-    this.prep(`UPDATE jobs SET ${cols.join(', ')} WHERE id = ?`).run(...vals);
-  }
-  allJobs(): { id: string; kind: string; topic: string; platform: string; status: string; steps: string; result: string; err: string; created: number; started: number | null; finished: number | null }[] {
-    return this.prep('SELECT * FROM jobs ORDER BY created DESC LIMIT 100').all() as unknown as { id: string; kind: string; topic: string; platform: string; status: string; steps: string; result: string; err: string; created: number; started: number | null; finished: number | null }[];
-  }
-  getJobRow(id: string) {
-    return this.prep('SELECT * FROM jobs WHERE id = ?').get(id) as
-      | { id: string; kind: string; topic: string; platform: string; status: string; steps: string; result: string; err: string; created: number; started: number | null; finished: number | null }
-      | undefined;
-  }
-  delJob(id: string) { this.prep('DELETE FROM jobs WHERE id = ?').run(id); }
-
-  // ---- ai_runs (Activity: every AI generation the user starts) ----
-  addRun(r: { id: string; kind: string; title: string; page: string; platform: string; input: string; steps: string; provider: string; model: string; created: number }) {
-    this.prep(`INSERT INTO ai_runs (id, kind, title, page, platform, input, status, steps, provider, model, created) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)`)
-      .run(r.id, r.kind, r.title, r.page, r.platform, r.input, r.steps, r.provider, r.model, r.created);
-    this.prep('DELETE FROM ai_runs WHERE id NOT IN (SELECT id FROM ai_runs ORDER BY created DESC LIMIT 500)').run(); // keep the newest 500
-  }
-  /** Whitelisted partial update. */
-  saveRun(id: string, f: { status?: string; steps?: string; provider?: string; model?: string; output?: string; error?: string; finished?: number; ms?: number }) {
-    const cols: string[] = [], vals: any[] = [];
-    for (const k of ['status', 'steps', 'provider', 'model', 'output', 'error', 'finished', 'ms'] as const) {
-      if (f[k] !== undefined) { cols.push(`${k} = ?`); vals.push(f[k]); }
-    }
-    if (!cols.length) return;
-    vals.push(id);
-    this.prep(`UPDATE ai_runs SET ${cols.join(', ')} WHERE id = ?`).run(...vals);
-  }
-  listRuns(limit = 200): AiRunRow[] {
-    return this.prep('SELECT id, kind, title, page, platform, status, steps, provider, model, error, created, finished, ms FROM ai_runs ORDER BY created DESC LIMIT ?').all(limit) as unknown as AiRunRow[];
-  }
-  getRun(id: string): (AiRunRow & { input: string; output: string }) | undefined {
-    return this.prep('SELECT * FROM ai_runs WHERE id = ?').get(id) as unknown as (AiRunRow & { input: string; output: string }) | undefined;
-  }
-  delRun(id: string) { this.prep('DELETE FROM ai_runs WHERE id = ?').run(id); }
-  clearFinishedRuns() { return this.prep("DELETE FROM ai_runs WHERE status != 'running'").run().changes as number; }
-  /** Runs left 'running' by a previous server process can never finish. */
-  markOrphanRuns(alive: Set<string>) {
-    for (const r of this.prep("SELECT id FROM ai_runs WHERE status = 'running'").all() as { id: string }[]) {
-      if (!alive.has(r.id)) this.prep("UPDATE ai_runs SET status = 'interrupted', error = 'server restarted while this was running', finished = ? WHERE id = ?").run(Date.now(), r.id);
-    }
-  }
+  // ---- tasks are the only record of long-running work (ADR-001) ----
+  // The old `jobs` (Studio runs) and `ai_runs` (Activity log) tables were
+  // migrated into `tasks` by migration 009 and dropped.
 
   // ---- ad-hoc aggregates for analysis ----
   count(): number { return (this.prep('SELECT COUNT(*) c FROM posts').get() as { c: number }).c; }
@@ -617,7 +558,7 @@ export function dbStats() {
     counts: {
       posts: store.count() as number,
       winners: store.allManual().length,
-      jobs: store.allJobs().length,
+      jobs: store.countTaskRows('workflow'),
       meta: store.countMeta() as number,
     },
   };

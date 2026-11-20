@@ -1,20 +1,20 @@
 // lib/application/drafts.ts — the "generate 3 grounded drafts" use case.
 //
 // This is the application layer: it orchestrates the domain (patterns, scoring,
-// limits, prompts) and the infrastructure (AI providers, activity log) and
-// returns a plain result. The HTTP route (app/api/generate) and the automation
-// runner (lib/automations.ts) both call it — no route handler is imported from
-// library code any more.
+// limits, prompts) and the infrastructure (AI providers) and returns a plain
+// result. The task worker calls it (lib/application/task-handlers.ts) and the
+// automation runner calls it too — no route handler is imported from library
+// code any more.
 import 'server-only';
 import { PLATFORM_HINTS, topicSpikes, fallbackDraft, allPayload } from '../engine';
 import { analyze, patternLibrary, patternTable, winners, winnerCard, type Analyzed } from '../domain/patterns';
 import { smartAI } from '../aichain';
-import { tracked, RunCancelled } from '../activity';
 import { fitToLimit } from '../enforce';
 import { FORMATS_BY_PLATFORM, FORMAT_PLAYBOOK, type PlatformKey } from '../playbook';
 import { fitScorer } from '../domain/score';
 import { findRecycled, recycledText } from '../domain/recycle';
 import { readTimezone } from '../timezone-store';
+import type { WorkCtx } from './tasks';
 
 export type GenerateInput = {
   platform?: string | null; topic?: string | null; postRef?: string | null; tone?: string | null;
@@ -24,8 +24,8 @@ export type GenerateInput = {
 
 /** A use-case answer: the HTTP status the adapter should use and the JSON body.
  *  `failure` marks the work as failed (the Activity log shows it) even when a
- *  fallback body is returned to the caller. */
-export type UseCaseResult = { status: number; body: any; failure?: string };
+ *  fallback body is returned to the caller. `title` is the Activity title. */
+export type UseCaseResult = { status: number; body: any; failure?: string; title?: string };
 
 const TONE_GUIDE: Record<string, string> = {
   professional: 'Professional — clean, credible, precise; measured confidence.',
@@ -44,7 +44,7 @@ export async function pingAI(): Promise<UseCaseResult> {
 }
 
 /** Generate three platform-ready drafts grounded in the creator's own winners. */
-export async function generateDrafts(body: GenerateInput, opts: { signal?: AbortSignal } = {}): Promise<UseCaseResult> {
+export async function generateDrafts(body: GenerateInput, ctx: WorkCtx): Promise<UseCaseResult> {
   if (body.mode === 'ping') return pingAI();
 
   const pinned = body.model?.providerID && body.model?.id ? body.model : null;
@@ -54,45 +54,44 @@ export async function generateDrafts(body: GenerateInput, opts: { signal?: Abort
   const formatLabel = formatKey ? FORMAT_PLAYBOOK[formatKey].label : '';
   const title = `${PLATFORM_HINTS[platformKey].label}${formatLabel ? ' · ' + formatLabel : ''} — ${(body.idea || body.topic || 'your pillars').replace(/\s+/g, ' ').slice(0, 70)}`;
   try {
-    const result = await tracked({ kind: 'generate', title, page: '/generate', platform: platformKey, input: body, model: pinned, signal: opts.signal }, async run => {
-      const platform = body.platform && PLATFORM_HINTS[body.platform] ? body.platform : 'x';
-      const pf = PLATFORM_HINTS[platform];
-      const info = allPayload();
-      const rows = analyze(info.posts, readTimezone());
-      const lib = patternLibrary(rows);
-      const topicName = body.topic || '';
-      const inTopic = (a: Analyzed) => !topicName || !!a.topics?.includes(topicName);
+    const platform = body.platform && PLATFORM_HINTS[body.platform] ? body.platform : 'x';
+    const pf = PLATFORM_HINTS[platform];
+    const info = allPayload();
+    const rows = analyze(info.posts, readTimezone());
+    const lib = patternLibrary(rows);
+    const topicName = body.topic || '';
+    const inTopic = (a: Analyzed) => !topicName || !!a.topics?.includes(topicName);
 
-      // --- pick the winners the model studies: seed first, then same-platform, then niche cross-platform ---
-      const picked: Analyzed[] = [];
-      const add = (a?: Analyzed) => { if (a && !picked.some(p => p.id === a.id)) picked.push(a); };
-      if (body.postRef) add(rows.find(r => r.id === body.postRef));
-      for (const w of winners(rows.filter(inTopic), { platform, limit: 5 })) add(w);
-      for (const w of winners(rows.filter(inTopic), { nicheOnly: true, limit: 8 })) if (picked.length < 7) add(w);
-      if (picked.length < 3) for (const w of winners(rows, { limit: 6 })) if (picked.length < 6) add(w);
+    // --- pick the winners the model studies: seed first, then same-platform, then niche cross-platform ---
+    const picked: Analyzed[] = [];
+    const add = (a?: Analyzed) => { if (a && !picked.some(p => p.id === a.id)) picked.push(a); };
+    if (body.postRef) add(rows.find(r => r.id === body.postRef));
+    for (const w of winners(rows.filter(inTopic), { platform, limit: 5 })) add(w);
+    for (const w of winners(rows.filter(inTopic), { nicheOnly: true, limit: 8 })) if (picked.length < 7) add(w);
+    if (picked.length < 3) for (const w of winners(rows, { limit: 6 })) if (picked.length < 6) add(w);
 
-      const spike = topicName ? topicSpikes().find(t => t.name === topicName) : null;
-      const own = info.manual.filter(m => m.eng > 0).slice(0, 3);
-      const samePlat = rows.filter(r => r.source === platform).length;
-      const recycled = recycledText(findRecycled(rows).filter(c => c.platform === platform || samePlat < 6), 4);
+    const spike = topicName ? topicSpikes().find(t => t.name === topicName) : null;
+    const own = info.manual.filter(m => m.eng > 0).slice(0, 3);
+    const samePlat = rows.filter(r => r.source === platform).length;
+    const recycled = recycledText(findRecycled(rows).filter(c => c.platform === platform || samePlat < 6), 4);
 
-      const ctx = [
-        `TARGET PLATFORM: ${pf.label}. Collected posts on it: ${samePlat}${samePlat < 6 ? ' (thin — lean on cross-platform winners and platform best practice, and say so)' : ''}.`,
-        topicName ? `TOPIC FOCUS: ${topicName}${spike ? ` — ${spike.fresh} posts in last 48h (${spike.pct >= 0 ? '+' : ''}${spike.pct}% vs prior 48h)` : ''}.` : 'TOPIC: choose from the creator\'s pillars, whichever fits the winning patterns best.',
-        body.idea ? `CREATOR'S OWN IDEA / RAW MATERIAL (build the posts around this):\n${body.idea.slice(0, 2500)}` : '',
-        '',
-        'WINNER CARDS (study these):',
-        picked.length ? picked.map((a, i) => winnerCard(a, i)).join('\n\n') : '(no collected posts yet — rely on platform best practice and say so)',
-        '',
-        'PATTERN TABLE:',
-        patternTable(lib, samePlat >= 6 ? platform : undefined),
-        recycled ? `
-  RECYCLED POSTS — creators re-post these near-identically and they keep working (evergreen formats worth a reusable version):
-  ${recycled}` : '',
-        own.length ? `\nTHE CREATOR'S OWN LOGGED RESULTS: ${own.map(w => `"${w.text.replace(/\s+/g, ' ').slice(0, 90)}\" (${w.platform}, eng ${w.eng})`).join(' | ')}` : '',
-      ].filter(s => s !== '').join('\n');
+    const promptCtx = [
+      `TARGET PLATFORM: ${pf.label}. Collected posts on it: ${samePlat}${samePlat < 6 ? ' (thin — lean on cross-platform winners and platform best practice, and say so)' : ''}.`,
+      topicName ? `TOPIC FOCUS: ${topicName}${spike ? ` — ${spike.fresh} posts in last 48h (${spike.pct >= 0 ? '+' : ''}${spike.pct}% vs prior 48h)` : ''}.` : 'TOPIC: choose from the creator\'s pillars, whichever fits the winning patterns best.',
+      body.idea ? `CREATOR'S OWN IDEA / RAW MATERIAL (build the posts around this):\n${body.idea.slice(0, 2500)}` : '',
+      '',
+      'WINNER CARDS (study these):',
+      picked.length ? picked.map((a, i) => winnerCard(a, i)).join('\n\n') : '(no collected posts yet — rely on platform best practice and say so)',
+      '',
+      'PATTERN TABLE:',
+      patternTable(lib, samePlat >= 6 ? platform : undefined),
+      recycled ? `
+RECYCLED POSTS — creators re-post these near-identically and they keep working (evergreen formats worth a reusable version):
+${recycled}` : '',
+      own.length ? `\nTHE CREATOR'S OWN LOGGED RESULTS: ${own.map(w => `"${w.text.replace(/\s+/g, ' ').slice(0, 90)}\" (${w.platform}, eng ${w.eng})`).join(' | ')}` : '',
+    ].filter(s => s !== '').join('\n');
 
-      const prompt = `${ctx}
+    const prompt = `${promptCtx}
 
   (Platform and format rules are in the PLAYBOOK section of your system prompt — follow them exactly.)
   TONE: ${TONE_GUIDE[body.tone || 'professional'] || TONE_GUIDE.professional}
@@ -119,44 +118,48 @@ export async function generateDrafts(body: GenerateInput, opts: { signal?: Abort
   ### Variant 3: <structure name> (from #N)
   ...same...`;
 
-      run.step(`Writing 3 drafts${pinned ? ` with ${pinned.providerID} · ${pinned.id}` : ' (auto provider)'}`);
-      const { out, model, errors, ms } = await smartAI(prompt, 240000, pinned, run.signal, { platform, format: formatKey, role: 'generate' });
-      run.via(model);
-      run.step('Parsing & scoring drafts');
-      const usedCards = picked.map(a => ({ id: a.id, source: a.source, author: a.author || null, outlier: a.outlier, hook: a.hookLine, link: a.link }));
+    ctx.step(`Writing 3 drafts${pinned ? ` with ${pinned.providerID} · ${pinned.id}` : ' (auto provider)'}`);
+    const { out, model, errors, ms } = await smartAI(prompt, 240000, pinned, ctx.signal, { platform, format: formatKey, role: 'generate' });
+    ctx.via(model);
+    ctx.step('Parsing & scoring drafts');
+    const usedCards = picked.map(a => ({ id: a.id, source: a.source, author: a.author || null, outlier: a.outlier, hook: a.hookLine, link: a.link }));
 
-      if (out) {
-        const variants = parseVariants(out);
-        const insight = (/###\s*Pattern\s*\n([\s\S]*?)(?=###\s*Variant|$)/i.exec(out)?.[1] || '').trim();
-        if (variants.length) {
-          // every draft must fit the platform limit as the platform counts it (hashtags included)
-          const fitCtx = { platform, format: formatKey, role: 'generate' };
-          const fitted = await Promise.all(variants.map(v => fitToLimit(v.text + (v.hashtags.length ? '\n\n' + v.hashtags.join(' ') : '') + (v.firstReplyLine ? '\n' + v.firstReplyLine : ''), platform, formatKey, { pinned, signal: run.signal, ctx: fitCtx, thread: formatKey === 'x-thread' || formatKey === 'th-chain' })));
-          const n = fitted.filter(f => f.info.shortened).length;
-          if (n) run.step(`Shortened ${n} draft${n > 1 ? 's' : ''} to fit ${fitted[0].info.limit} characters`);
-          fitted.forEach((f, i) => {
-            const tags = variants[i].hashtags.filter(h => f.text.includes(h));
-            (variants[i] as any).text = tags.length ? f.text.replace(new RegExp('\\n*' + tags.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+') + '\\s*$'), '').trim() : f.text;
-            (variants[i] as any).hashtags = tags;
-            (variants[i] as any).length = f.info;
-            (variants[i] as any).firstReply = f.info.firstReply;
-          });
-          const fit = fitScorer(rows, platform);
-          for (const v of variants) (v as any).fit = fit(v.text + (v.hashtags.length ? '\n' + v.hashtags.join(' ') : ''));
-          return ({ mode: 'ai', via: model, ms, platform: pf.label, topic: topicName || 'your pillars', variants, insight, winners: usedCards, ai: allPayload().lastAI });
-        }
-        return ({ mode: 'template', platform: pf.label, topic: topicName, variants: fallbackDraft(platform, { title: picked[0]?.title, topic: topicName }).variants, insight: out.slice(0, 1500), hint: 'AI answered but not in the expected format — raw answer shown as the pattern note.', winners: usedCards });
+    if (out) {
+      const variants = parseVariants(out);
+      const insight = (/###\s*Pattern\s*\n([\s\S]*?)(?=###\s*Variant|$)/i.exec(out)?.[1] || '').trim();
+      if (variants.length) {
+        // every draft must fit the platform limit as the platform counts it (hashtags included)
+        const fitCtx = { platform, format: formatKey, role: 'generate' };
+        const fitted = await Promise.all(variants.map(v => fitToLimit(v.text + (v.hashtags.length ? '\n\n' + v.hashtags.join(' ') : '') + (v.firstReplyLine ? '\n' + v.firstReplyLine : ''), platform, formatKey, { pinned, signal: ctx.signal, ctx: fitCtx, thread: formatKey === 'x-thread' || formatKey === 'th-chain' })));
+        const n = fitted.filter(f => f.info.shortened).length;
+        if (n) ctx.step(`Shortened ${n} draft${n > 1 ? 's' : ''} to fit ${fitted[0].info.limit} characters`);
+        fitted.forEach((f, i) => {
+          const tags = variants[i].hashtags.filter(h => f.text.includes(h));
+          (variants[i] as any).text = tags.length ? f.text.replace(new RegExp('\\n*' + tags.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+') + '\\s*$'), '').trim() : f.text;
+          (variants[i] as any).hashtags = tags;
+          (variants[i] as any).length = f.info;
+          (variants[i] as any).firstReply = f.info.firstReply;
+        });
+        const fit = fitScorer(rows, platform);
+        for (const v of variants) (v as any).fit = fit(v.text + (v.hashtags.length ? '\n' + v.hashtags.join(' ') : ''));
+        return { status: 200, title, body: { mode: 'ai', via: model, ms, platform: pf.label, topic: topicName || 'your pillars', variants, insight, winners: usedCards, ai: allPayload().lastAI } };
       }
-      const fb = fallbackDraft(platform, { title: picked[0]?.title, topic: topicName });
-      return ({
+      return { status: 200, title, body: { mode: 'template', platform: pf.label, topic: topicName, variants: fallbackDraft(platform, { title: picked[0]?.title, topic: topicName }).variants, insight: out.slice(0, 1500), hint: 'AI answered but not in the expected format — raw answer shown as the pattern note.', winners: usedCards } };
+    }
+    const fb = fallbackDraft(platform, { title: picked[0]?.title, topic: topicName });
+    const msg = errors.join(' | ') || 'no AI provider enabled';
+    return {
+      status: 200, title, failure: msg,
+      body: {
         mode: 'template', platform: pf.label, topic: topicName, variants: fb.variants, winners: usedCards,
-        aiError: errors.join(' | ') || 'no AI provider enabled',
+        aiError: msg,
         hint: `No AI provider answered. Open Settings → AI providers: install/log in to the Claude CLI, add an Anthropic API key, or start OpenCode.`,
-      });
-    }, (o: any) => (o.mode === 'template' ? String(o.aiError || o.hint || 'fell back to a template') : null));
-    return { status: 200, body: result };
+      },
+    };
   } catch (e: any) {
-    return { status: e instanceof RunCancelled ? 499 : 500, body: { mode: 'template', variants: [], aiError: e instanceof RunCancelled ? 'cancelled' : String(e?.message || e) } };
+    if (ctx.signal.aborted) throw e; // cancelled — the worker turns this into a cancelled task
+    const msg = String(e?.message || e).slice(0, 300);
+    return { status: 500, title, failure: msg, body: { mode: 'template', variants: [], aiError: msg } };
   }
 }
 

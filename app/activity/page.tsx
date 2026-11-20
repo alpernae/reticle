@@ -23,13 +23,14 @@ type Run = {
   id: string; kind: string; title: string; page: string; platform: string; status: string; steps: Step[];
   provider: string; model: string; error: string; created: number; finished: number | null; ms: number | null;
 };
-type Detail = { run: Run & { input?: any; output?: any }; job?: { result: string } };
+type Detail = { run: Run & { input?: any; output?: any } };
 
 const KIND: Record<string, string> = {
   generate: 'Generate', tool: 'Toolkit', 'format-quick': 'Quick posts', 'format-polish': 'Series polish',
-  brief: 'AI brief', categorize: 'Categorize', workflow: 'Workflow', refine: 'Polish', automation: 'Automation', mindmap: 'Mind map',
+  brief: 'AI brief', categorize: 'Categorize', workflow: 'Workflow', refine: 'Polish', automation: 'Automation',
+  mindmap: 'Mind map', ask: 'Ask', collect: 'Collect', ingest: 'Import',
 };
-const ACTIVE = new Set(['running', 'queued', 'paused']);
+const ACTIVE = new Set(['running', 'queued', 'paused', 'waiting']);
 const FAILED = ['failed', 'cancelled', 'stopped', 'interrupted'];
 const FILTERS: { key: string; label: string; match: (r: Run) => boolean }[] = [
   { key: 'all', label: 'All', match: () => true },
@@ -245,7 +246,7 @@ function RunDetail({ run, detail, now, onCancel, onDelete, onClose }: { run: Run
             </dl>
           ) : <p className="text-[13px] text-muted-foreground">No inputs recorded for this run.</p>)
           : active ? <p className="flex items-center gap-2 text-[13px] text-muted-foreground"><Spinner className="size-4" /> Still working. You can leave this page; the result is saved here when it finishes.</p>
-          : <Output kind={run.kind} out={out} job={detail?.job} platform={run.platform} />}
+          : <Output kind={run.kind} out={out} platform={run.platform} />}
       </div>
     </div>
   );
@@ -266,7 +267,7 @@ function TextBlock({ text, title, fit, platform, firstReply }: { text: string; t
   );
 }
 
-function Output({ kind, out, job, platform }: { kind: string; out: any; job?: { result: string }; platform?: string }) {
+function Output({ kind, out, platform }: { kind: string; out: any; platform?: string }) {
   if (kind === 'automation' && out && Array.isArray(out.steps)) return (
     <div className="space-y-3">
       {out.steps.map((s: any, i: number) => <TextBlock key={i} title={`Step ${i + 1} · ${s.label}`} text={s.text} />)}
@@ -274,7 +275,17 @@ function Output({ kind, out, job, platform }: { kind: string; out: any; job?: { 
     </div>
   );
   if (kind === 'mindmap' && out && Array.isArray(out.ideas)) return <ul className="space-y-1.5 text-[13px]">{out.ideas.map((x: any, i: number) => <li key={i} className="rounded-lg border border-border px-3 py-2"><span className="text-muted-foreground">{x.kind}</span> · {x.text}</li>)}</ul>;
-  if (kind === 'workflow') return job?.result ? <TextBlock text={job.result} title="Result" /> : <p className="text-[13px] text-muted-foreground">No result.</p>;
+  if (kind === 'workflow') return out?.result ? <TextBlock text={out.result} title="Result" /> : <p className="text-[13px] text-muted-foreground">No result.</p>;
+  if (kind === 'ask' && out && typeof out.answer === 'string') return (
+    <div className="space-y-3">
+      <TextBlock text={out.answer} title="Answer" />
+      {Array.isArray(out.posts) && out.posts.length > 0 && (
+        <ul className="space-y-1 text-[12px] text-muted-foreground">
+          {out.posts.map((p: any, i: number) => <li key={i}>· {p.title} <span className="opacity-70">({p.source}, {p.outlier}× normal)</span></li>)}
+        </ul>
+      )}
+    </div>
+  );
   if (!out || typeof out !== 'object') return <p className="text-[13px] text-muted-foreground">No saved result.</p>;
   if (kind === 'generate') return (
     <div className="space-y-3">
@@ -308,8 +319,10 @@ function askedFor(kind: string, input: Record<string, unknown>): [string, string
   if (kind === 'tool') {
     const tool = TOOLS.find(t => t.key === input.tool);
     if (!tool) return out;
+    // the tool's own fields live under `input` (the request body)
+    const src = (input.input && typeof input.input === 'object') ? input.input as Record<string, unknown> : input;
     for (const f of tool.fields) {
-      const v = str(input[f.key]);
+      const v = str(src[f.key]);
       if (!v.trim()) continue;
       out.push([f.label, f.kind === 'select' ? (f.options?.find(o => o.value === v)?.label || v) : v]);
     }

@@ -220,24 +220,51 @@ describe('task queue', () => {
   });
 
   it('knows every kind the API routes enqueue', () => {
-    expect(handlers.handlerKinds()).toEqual(expect.arrayContaining(['collect', 'ingest', 'generate', 'tool']));
+    expect(handlers.handlerKinds()).toEqual(expect.arrayContaining([
+      'collect', 'ingest', 'generate', 'tool', 'workflow', 'automation',
+      'format-quick', 'format-polish', 'brief', 'categorize', 'ask', 'mindmap', 'refine',
+    ]));
   });
 
-  it('lets an outside signal cancel a tracked run (the task → AI bridge)', async () => {
-    const activity = await import('../activity');
-    const ac = new AbortController();
-    const p = activity.tracked(
-      { kind: 'generate', title: 'cancel me', page: '/generate', signal: ac.signal },
-      async run => {
-        await new Promise(r => setTimeout(r, 200));
-        if (run.signal.aborted) throw new Error('aborted');
-        return { ok: true };
+  it('keeps a fallback answer but still marks the task as failed', async () => {
+    handlers.registerHandler('fallback', {
+      limit: 1,
+      async run() {
+        return { status: 'failed', error: 'AI unavailable', output: { status: 200, body: { mode: 'template', variants: [] } } };
       },
-    );
-    setTimeout(() => ac.abort(), 20);
-    await expect(p).rejects.toThrow();
+    });
 
-    const runs = db.getStore().listRuns(10);
-    expect(runs[0].status).toBe('cancelled');
+    const task = tasks.enqueueTask({ kind: 'fallback' });
+    await worker.runUntilIdle();
+
+    const t = tasks.getTask(task.id)!;
+    expect(t.status).toBe('failed');
+    expect(t.error).toBe('AI unavailable');
+    // the caller still gets the fallback body
+    expect(t.output).toEqual({ status: 200, body: { mode: 'template', variants: [] } });
+    handlers.unregisterHandler('fallback');
+  });
+
+  it('gives the handler the task signal, so cancelling aborts the work', async () => {
+    let aborted = false;
+    handlers.registerHandler('signal', {
+      limit: 1,
+      async run(ctx) {
+        await new Promise<void>(resolve => {
+          const t = setInterval(() => { if (ctx.signal.aborted) { aborted = true; clearInterval(t); resolve(); } }, 10);
+        });
+        throw new Error('aborted');
+      },
+    });
+
+    const task = tasks.enqueueTask({ kind: 'signal' });
+    await worker.runUntilIdle(50);
+    expect(tasks.getTask(task.id)!.status).toBe('running');
+
+    tasks.cancelTask(task.id);
+    await worker.runUntilIdle();
+    expect(aborted).toBe(true);
+    expect(tasks.getTask(task.id)!.status).toBe('cancelled');
+    handlers.unregisterHandler('signal');
   });
 });

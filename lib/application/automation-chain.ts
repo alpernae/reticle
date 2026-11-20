@@ -42,27 +42,26 @@ export type ChainCtx = {
   via: (m: { providerID: string; id: string } | null | undefined) => void;
   signal: AbortSignal;
 };
-
 /** Run one step of the chain and return its text. */
 export async function runStep(s: AutoStep, prompt: string, ctx: ChainCtx): Promise<{ text: string; runId?: string }> {
   switch (s.worker) {
     case 'generate': {
       const { generateDrafts } = await import('./drafts');
-      const res = await generateDrafts({ platform: s.platform, idea: prompt, format: s.format || null, tone: s.tone || null, model: s.model }, { signal: ctx.signal });
+      const res = await generateDrafts({ platform: s.platform, idea: prompt, format: s.format || null, tone: s.tone || null, model: s.model }, ctx);
       const j = res.body;
       if (res.status !== 200 || j?.error || j?.mode !== 'ai') throw new Error(j?.aiError || j?.error || j?.hint || `Generate failed (${res.status})`);
       if (j.via) ctx.via(j.via);
-      return { text: toText(j), runId: j.runId };
+      return { text: toText(j) };
     }
     case 'tool': {
       const def = TOOLS.find(t => t.key === s.tool);
       if (!def) throw new Error('Pick a Toolkit tool for this step.');
       const field = def.fields.find(f => f.kind !== 'select') || def.fields[0];
       const { runTool } = await import('./tools');
-      const res = await runTool({ tool: def.key, platform: s.platform, input: field ? { [field.key]: prompt } : {}, model: s.model }, { signal: ctx.signal });
+      const res = await runTool({ tool: def.key, platform: s.platform, input: field ? { [field.key]: prompt } : {}, model: s.model }, ctx);
       const j = res.body;
       if (res.status !== 200 || j?.error) throw new Error(j?.error || `Toolkit failed (${res.status})`);
-      return { text: toText(j), runId: j.runId };
+      return { text: toText(j) };
     }
     case 'agent': {
       // A workflow agent is a task of its own — queue it and wait for it.

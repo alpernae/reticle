@@ -15,11 +15,13 @@ import { route } from '@/lib/http/route';
  * so they are not shown.
  */
 const LABEL: Record<string, string> = { 'claude-cli': 'Claude CLI', anthropic: 'Claude API', opencode: 'OpenCode' };
+/** The task kinds that spend AI quota (collectors do not). */
+const AI_KINDS = new Set(['generate', 'tool', 'format-quick', 'format-polish', 'brief', 'categorize', 'refine', 'automation', 'mindmap', 'ask', 'workflow']);
 
 const handler_GET = async () => {
   await connection();
   const store = getStore();
-  const runs = store.listRuns(1000);
+  const runs = store.listTaskRows({ limit: 1000 }).filter(r => AI_KINDS.has(r.kind));
   const tz = readTimezone();
   const p = zonedParts(Date.now(), tz);
   const dayStart = zonedTimeToUtc(p.year, p.month, p.day, 0, 0, tz);
@@ -33,7 +35,7 @@ const handler_GET = async () => {
   }
   const finished = week.filter(r => r.status !== 'running');
   const done = finished.filter(r => r.status === 'done');
-  const times = done.map(r => r.ms || 0).filter(Boolean).sort((a, b) => a - b);
+  const times = done.map(r => (r.finished && r.started ? r.finished - r.started : 0)).filter(Boolean).sort((a, b) => a - b);
 
   const status = readModelStatus();
   const oc = Object.entries(status).filter(([k]) => k.startsWith('opencode|'));

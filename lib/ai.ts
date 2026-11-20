@@ -316,10 +316,10 @@ export function readModelStatus(): Record<string, ModelStatus> {
     return m;
   }
   // first read: backfill from the Activity history so the status is right immediately
-  for (const r of [...store.listRuns(300)].reverse()) {
+  for (const r of [...store.listTaskRows({ limit: 300 })].reverse()) {
     if (!r.provider || !['done', 'failed'].includes(r.status)) continue;
     const ok = r.status === 'done';
-    const st: ModelStatus = { ok, msg: ok ? 'answered' : r.error.slice(0, 240), ts: r.finished || r.created };
+    const st: ModelStatus = { ok, msg: ok ? 'answered' : (r.error || '').slice(0, 240), ts: r.finished || r.created };
     const reset = /resets? in ~?\s*([\d.]+)\s*(h|hours?|m|min|minutes?)/i.exec(r.error || '');
     if (!ok && reset) st.retryAt = st.ts + Number(reset[1]) * (/^h/i.test(reset[2]) ? 36e5 : 6e4);
     m[r.provider + '|' + (r.model || 'default')] = st;

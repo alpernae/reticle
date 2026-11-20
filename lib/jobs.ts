@@ -40,12 +40,16 @@ function taskToJob(t: Task): JobRow {
   const steps: JobStep[] = (def?.steps || []).map((s, i) => {
     const ev = events.find(e => e.label === s.label);
     const meta = cp?.meta?.[i];
+    const data = (ev?.data || null) as { note?: string; dur?: number | null } | null;
     const state: StepState = ev?.state === 'failed' ? 'failed'
       : ev?.state === 'done' || meta ? 'done'
         : ev?.state === 'active' ? 'active' : 'pending';
+    const note = data?.note || (meta ? `${meta.chars} chars · ${Math.round(meta.ms / 1000)}s` : undefined);
+    const dur = data?.dur ?? (meta ? Math.round(meta.ms / 1000) : undefined);
     return {
       name: s.name, label: s.label, state,
-      ...(meta ? { note: `${meta.chars} chars · ${Math.round(meta.ms / 1000)}s`, dur: Math.round(meta.ms / 1000) } : {}),
+      ...(note ? { note } : {}),
+      ...(dur != null ? { dur } : {}),
     };
   });
   const out = (t.output || null) as { result?: string } | null;
