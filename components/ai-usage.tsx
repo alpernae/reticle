@@ -6,7 +6,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Usage } from '@/components/panelui/usage';
-import { subscribeActivity } from '@/components/toaster';
+import { subscribeActivity } from '@/components/live';
 
 type U = {
   today: { total: number; budget: number; segments: { label: string; value: number }[] };

@@ -16,6 +16,9 @@ import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import { getStore } from './db';
+import { getSecret, setSecret } from './secrets';
+import { readSetting, writeSetting } from './settings';
+import { readCache, writeCache } from './cache';
 
 export type ProviderId = 'claude-cli' | 'anthropic' | 'opencode';
 export const PROVIDER_LABEL: Record<ProviderId, string> = {
@@ -47,7 +50,7 @@ const DEFAULT_AI: AIConfig = {
 export function readAIConfig(): AIConfig {
   const c: AIConfig = JSON.parse(JSON.stringify(DEFAULT_AI));
   try {
-    const v = JSON.parse(getStore().getMeta('aiConfig') || '{}');
+    const v = readSetting<Record<string, any>>('aiConfig', {});
     if (Array.isArray(v.order)) {
       const ok = v.order.filter((p: string) => p in PROVIDER_LABEL) as ProviderId[];
       c.order = [...new Set([...ok, ...DEFAULT_AI.order])];
@@ -63,16 +66,16 @@ export function readAIConfig(): AIConfig {
 }
 export function saveAIConfig(next: Partial<AIConfig>): AIConfig {
   const merged = { ...readAIConfig(), ...next };
-  getStore().setMeta('aiConfig', JSON.stringify(merged));
+  writeSetting('aiConfig', merged);
   return readAIConfig();
 }
 
-// ---------------- secrets (local SQLite meta only) ----------------
+// ---------------- secrets (AES-256-GCM rows in SQLite; see lib/secrets.ts) ----------------
 const mask = (s: string | null) => (s ? '••••' + s.slice(-4) : null);
-export const getAnthropicKey = () => (getStore().getMeta('anthropicKey') || '').trim() || null;
-export const setAnthropicKey = (k: string) => getStore().setMeta('anthropicKey', String(k || '').trim().slice(0, 300));
-export const getClaudeOAuthToken = () => (getStore().getMeta('claudeOAuthToken') || '').trim() || null;
-export const setClaudeOAuthToken = (k: string) => getStore().setMeta('claudeOAuthToken', String(k || '').trim().slice(0, 400));
+export const getAnthropicKey = () => getSecret('anthropicKey');
+export const setAnthropicKey = (k: string) => setSecret('anthropicKey', String(k || '').slice(0, 300));
+export const getClaudeOAuthToken = () => getSecret('claudeOAuthToken');
+export const setClaudeOAuthToken = (k: string) => setSecret('claudeOAuthToken', String(k || '').slice(0, 400));
 
 // ---------------- claude CLI ----------------
 /** Find the claude executable: configured path → PATH → common install dirs. */
@@ -190,11 +193,12 @@ export async function opencodeModels(): Promise<{ list: { id: string; label: str
     // first call may have to START the service — give it time
     const all = await Promise.race([listAllModels(), new Promise<never>((_, rej) => setTimeout(() => rej(new Error('OpenCode service did not answer in 20s')), 20_000))]);
     list = all.map(m => ({ id: `${m.providerID}::${m.id}`, label: `${m.providerID} / ${m.id}` }));
-    if (list.length) getStore().setMeta('opencodeModelList', JSON.stringify(list));
+    if (list.length) writeCache('opencodeModelList', list);
     else error = 'OpenCode returned no models — run `opencode auth login` to add a provider';
   } catch (e: any) {
     error = String(e?.message || e).slice(0, 160);
-    try { list = JSON.parse(getStore().getMeta('opencodeModelList') || '[]'); stale = list.length > 0; } catch {}
+    list = readCache('opencodeModelList', []);
+    stale = list.length > 0;
   }
   ocCache = { at: Date.now(), list, error, stale };
   return ocCache;
@@ -255,46 +259,88 @@ export const MODEL_CHOICES: Record<ProviderId, { id: string; label: string }[]> 
   opencode: [{ id: 'default', label: 'OpenCode default model' }],
 };
 
-// ---------------- measured latency (last success per provider|model) ----------------
-export function readLatency(): Record<string, number> {
-  try { return JSON.parse(getStore().getMeta('aiLatency') || '{}'); } catch { return {}; }
-}
-function recordLatency(provider: ProviderId, model: string, ms: number) {
-  const m = readLatency();
-  m[provider + '|' + (model || 'default')] = ms;
-  getStore().setMeta('aiLatency', JSON.stringify(m));
-}
-
-// ---------------- per-model health (last outcome per provider|model) ----------------
+// ---------------- provider health (latency + last outcome per provider|model) ----------------
 // One model failing (e.g. an OpenCode free model out of quota) must not make the
 // whole app look "AI off" — health is tracked per model, and the global chip is
 // derived from whether ANY provider currently works.
 export type ModelStatus = { ok: boolean; msg: string; ts: number; retryAt?: number };
-export function readModelStatus(): Record<string, ModelStatus> {
+
+let migratedLegacyHealth = false;
+/** One-time move of the old aiLatency / aiModelStatus meta blobs into rows. */
+function migrateLegacyHealth() {
+  if (migratedLegacyHealth) return;
+  migratedLegacyHealth = true;
   const store = getStore();
-  const raw = store.getMeta('aiModelStatus');
-  if (raw) { try { return JSON.parse(raw); } catch { return {}; } }
-  // first read: backfill from the Activity history so the status is right immediately
+  const latency = store.getMeta('aiLatency');
+  if (latency != null) {
+    try {
+      const m = JSON.parse(latency) as Record<string, number>;
+      for (const [key, ms] of Object.entries(m)) if (typeof ms === 'number') store.setProviderLatency(key, ms);
+    } catch {}
+    store.setMeta('aiLatency', '');
+  }
+  const status = store.getMeta('aiModelStatus');
+  if (status != null) {
+    try {
+      const m = JSON.parse(status) as Record<string, ModelStatus>;
+      for (const [key, st] of Object.entries(m)) {
+        if (!st || typeof st !== 'object') continue;
+        store.upsertProviderHealthRow({
+          key, ok: st.ok ? 1 : 0, msg: String(st.msg || '').slice(0, 240),
+          ts: Number(st.ts) || 0, retryAt: st.retryAt ?? null, latencyMs: null,
+        });
+      }
+    } catch {}
+    store.setMeta('aiModelStatus', '');
+  }
+}
+
+export function readLatency(): Record<string, number> {
+  migrateLegacyHealth();
+  const out: Record<string, number> = {};
+  for (const r of getStore().listProviderHealthRows()) if (r.latencyMs != null) out[r.key] = r.latencyMs;
+  return out;
+}
+function recordLatency(provider: ProviderId, model: string, ms: number) {
+  migrateLegacyHealth();
+  getStore().setProviderLatency(provider + '|' + (model || 'default'), ms);
+}
+
+export function readModelStatus(): Record<string, ModelStatus> {
+  migrateLegacyHealth();
+  const store = getStore();
+  const rows = store.listProviderHealthRows().filter(r => r.ok != null);
   const m: Record<string, ModelStatus> = {};
-  for (const r of [...store.listRuns(300)].reverse()) {
+  if (rows.length) {
+    for (const r of rows) m[r.key] = { ok: !!r.ok, msg: r.msg || '', ts: r.ts || 0, ...(r.retryAt ? { retryAt: r.retryAt } : {}) };
+    return m;
+  }
+  // first read: backfill from the Activity history so the status is right immediately
+  for (const r of [...store.listTaskRows({ limit: 300 })].reverse()) {
     if (!r.provider || !['done', 'failed'].includes(r.status)) continue;
     const ok = r.status === 'done';
-    const st: ModelStatus = { ok, msg: ok ? 'answered' : r.error.slice(0, 240), ts: r.finished || r.created };
+    const st: ModelStatus = { ok, msg: ok ? 'answered' : (r.error || '').slice(0, 240), ts: r.finished || r.created };
     const reset = /resets? in ~?\s*([\d.]+)\s*(h|hours?|m|min|minutes?)/i.exec(r.error || '');
     if (!ok && reset) st.retryAt = st.ts + Number(reset[1]) * (/^h/i.test(reset[2]) ? 36e5 : 6e4);
     m[r.provider + '|' + (r.model || 'default')] = st;
   }
-  store.setMeta('aiModelStatus', JSON.stringify(m));
+  for (const [key, st] of Object.entries(m)) {
+    store.upsertProviderHealthRow({
+      key, ok: st.ok ? 1 : 0, msg: st.msg, ts: st.ts, retryAt: st.retryAt ?? null, latencyMs: null,
+    });
+  }
   return m;
 }
 function recordModelStatus(provider: ProviderId, model: string, ok: boolean, msg: string) {
-  const m = readModelStatus();
+  migrateLegacyHealth();
   const st: ModelStatus = { ok, msg: msg.slice(0, 240), ts: Date.now() };
   // "quota resets in ~13.5h" → remember when it should work again
   const reset = /resets? in ~?\s*([\d.]+)\s*(h|hours?|m|min|minutes?)/i.exec(msg);
   if (!ok && reset) st.retryAt = Date.now() + Number(reset[1]) * (/^h/i.test(reset[2]) ? 36e5 : 6e4);
-  m[provider + '|' + (model || 'default')] = st;
-  getStore().setMeta('aiModelStatus', JSON.stringify(m));
+  getStore().upsertProviderHealthRow({
+    key: provider + '|' + (model || 'default'),
+    ok: ok ? 1 : 0, msg: st.msg, ts: st.ts, retryAt: st.retryAt ?? null, latencyMs: null,
+  });
 }
 
 /** App-wide AI health: ready if any enabled provider's last call worked (or it was never tried and is set up). */

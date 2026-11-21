@@ -1,8 +1,12 @@
 'use client';
 // App-wide toasts (PanelUI Toast). `toast()` works from any client code;
 // <RunToasts/> announces AI runs that finish while you're on another page.
+//
+// The updates arrive over the live event stream (components/live.tsx) — one
+// SSE connection per tab — with a slow poll as the safety net.
 import { useEffect } from 'react';
 import { createToaster } from '@/components/panelui/toast';
+import { subscribeActivity, type LiveSummary } from '@/components/live';
 
 export const toaster = createToaster();
 
@@ -20,25 +24,12 @@ const KIND: Record<string, string> = {
 };
 const secs = (ms?: number | null) => (ms ? (ms >= 60000 ? `${Math.round(ms / 6000) / 10} min` : `${Math.round(ms / 1000)}s`) : '');
 
-type Summary = { running: number; active?: string[]; recent?: { id: string; kind: string; page?: string | null; title: string; status: string; error?: string | null; ms?: number | null }[] };
-
-// ---- one shared poll for the running-count badges and the finish toasts ----
-const listeners = new Set<(s: Summary) => void>();
-let timer: ReturnType<typeof setInterval> | null = null;
-const tick = () => fetch('/api/activity?summary=1').then(r => r.json()).then((s: Summary) => { if (typeof s.running === 'number') listeners.forEach(l => l(s)); }).catch(() => {});
-export function subscribeActivity(fn: (s: Summary) => void) {
-  listeners.add(fn);
-  if (!timer) { tick(); timer = setInterval(tick, 4000); } else tick();
-  return () => { listeners.delete(fn); if (!listeners.size && timer) { clearInterval(timer); timer = null; } };
-}
-export const pokeActivity = () => setTimeout(tick, 400);
-
 /** Toasts each AI run this tab saw working once it finishes, fails or is cancelled (finished runs only when you are on another page). */
 export function RunToasts() {
   useEffect(() => {
     const seen = new Set<string>();      // runs observed while running
     const told = new Set<string>();      // already toasted
-    return subscribeActivity(s => {
+    return subscribeActivity((s: LiveSummary) => {
       for (const id of s.active ?? []) seen.add(id);
       for (const r of s.recent ?? []) {
         if (!seen.has(r.id) || told.has(r.id)) continue;

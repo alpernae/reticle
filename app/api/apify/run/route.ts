@@ -1,11 +1,12 @@
 import { NextResponse } from 'next/server';
 import { apifyStart, apifyTopicScanX, apifyDeepScanX, apifyPoll, isPlatform, listRuns } from '@/lib/apify';
+import { route } from '@/lib/http/route';
 
 export const maxDuration = 120;
 
 /** POST — start a run for one platform: { platform: 'x'|'instagram'|'linkedin', sources? }.
  *  Uses the saved config (actor id, source list, maxItems cost guard). */
-export async function POST(req: Request) {
+const handler_POST = async (req: Request) => {
   const body = await req.json().catch(() => ({} as any));
   const platform = String(body?.platform || '');
   if (!isPlatform(platform)) return NextResponse.json({ error: 'platform must be x, linkedin, instagram, threads, tiktok or youtube' }, { status: 400 });
@@ -25,7 +26,7 @@ export async function POST(req: Request) {
 
 /** GET ?id=<runId> — poll one run (imports its dataset once it has SUCCEEDED).
  *  GET without id — full run history. */
-export async function GET(req: Request) {
+const handler_GET = async (req: Request) => {
   const id = new URL(req.url).searchParams.get('id');
   if (!id) return NextResponse.json({ runs: listRuns() });
   try {
@@ -35,3 +36,6 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: e.message }, { status: 502 });
   }
 }
+
+export const POST = route(handler_POST);
+export const GET = route(handler_GET);

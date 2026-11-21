@@ -40,7 +40,11 @@ yarn-error.log*
 /data.sqlite
 /data.sqlite-*
 
+# the secrets key (AES-256-GCM) — never commit it: it unlocks the stored tokens
+/.reticle.key
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
 /data.backup-*.sqlite
+/backups/

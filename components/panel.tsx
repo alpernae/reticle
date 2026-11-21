@@ -14,7 +14,8 @@ import { CommandMenu } from '@/components/command-menu';
 import { AskDock } from '@/components/ask-dock';
 import { BRAND } from '@/lib/brand';
 import { Toast } from '@/components/panelui/toast';
-import { RunToasts, pokeActivity, subscribeActivity, toaster } from '@/components/toaster';
+import { RunToasts, toaster } from '@/components/toaster';
+import { pokeActivity, subscribeActivity } from '@/components/live';
 import { AIUsage } from '@/components/ai-usage';
 
 // ---------- formatting ----------
@@ -47,13 +48,20 @@ export function ThemeToggle() {
   );
 }
 
-// ---------- api state hook with cross-page refresh ----------
+// ---------- api hook with cross-page refresh ----------
 const REFRESH_EVT = 'sc-refresh';
-export function useApiState<T = any>(): { data: T | null; reload: () => void } {
+/** Fetch a JSON endpoint and keep it fresh when the app asks for a refresh.
+ *  Every page reads its own scoped endpoint (ADR-004) — there is no more
+ *  "fetch everything" endpoint. */
+export function useApi<T = any>(url: string): { data: T | null; reload: () => void; loading: boolean } {
   const [data, setData] = useState<T | null>(null);
-  const reload = useCallback(() => { fetch('/api/state').then(r => r.json()).then(setData).catch(() => {}); }, []);
+  const [loading, setLoading] = useState(true);
+  const reload = useCallback(() => {
+    setLoading(true);
+    fetch(url).then(r => r.json()).then(j => { setData(j); setLoading(false); }).catch(() => setLoading(false));
+  }, [url]);
   useEffect(() => { reload(); const h = () => reload(); window.addEventListener(REFRESH_EVT, h); return () => window.removeEventListener(REFRESH_EVT, h); }, [reload]);
-  return { data, reload };
+  return { data, reload, loading };
 }
 export const notifyRefresh = () => window.dispatchEvent(new Event(REFRESH_EVT));
 
@@ -209,7 +217,7 @@ export function AIHealthChip({ health }: { health?: AIHealth }) {
 }
 
 export function Topbar() {
-  const { data } = useApiState();
+  const { data } = useApi<{ count: number; aiHealth: AIHealth }>('/api/summary');
   return (
     <header className="sticky top-0 z-30 flex items-center gap-3 px-4 md:px-6 h-14 border-b border-border bg-background/85 backdrop-blur">
       <span className="font-semibold text-sm">{BRAND.name}</span>

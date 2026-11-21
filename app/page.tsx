@@ -5,16 +5,17 @@
 // trend with a range switcher, then the day-by-day table and the signal cards.
 // All colour still comes from theme tokens — monochrome by construction.
 import Link from 'next/link';
-import { Card, CardHead, Chip, Bars, TrendChart, StackBar, btn, btnPrimary, inputCls, useApiState, notifyRefresh, notifyActivity, kfmt, AGO } from '@/components/panel';
+import { Card, CardHead, Chip, Bars, TrendChart, StackBar, btn, btnPrimary, inputCls, useApi, notifyRefresh, notifyActivity, kfmt, AGO } from '@/components/panel';
 import { Kpi } from '@/components/panelui/kpi';
 import { Sparkles, RefreshCw, ArrowRight, TrendingUp, Info, Search, Download } from 'lucide-react';
-import { useState } from 'react';
-import { CATEGORIES, inCategory, categoryCounts } from '@/lib/categories';
+import { useEffect, useMemo, useState } from 'react';
+import { CATEGORIES } from '@/lib/categories';
 import { ModelPicker, pickedModel } from '@/components/model-picker';
 import { BestTimeCard } from '@/components/best-time';
 import { PostPlanet } from '@/components/post-planet';
 import { Sel } from '@/components/sel';
 import { Spinner } from '@/components/panelui/spinner';
+import type { TimingPoint } from '@/lib/besttime';
 
 const SNAME: Record<string, string> = { x: 'X', linkedin: 'LinkedIn', instagram: 'Instagram', threads: 'Threads', tiktok: 'TikTok', youtube: 'YouTube' };
 const hour12 = (i: number) => `${i % 12 || 12}:00 ${i < 12 ? 'AM' : 'PM'}`;
@@ -28,9 +29,30 @@ type TopicSpike = {
   pct: number;
   top: { title: string; source: string; link: string; score: number }[];
 };
-type PostRow = { created: number; score: number; comments: number; source: string; title: string; link: string; security?: boolean; topics?: string[]; aiCats?: string[] };
+type OverviewDay = {
+  i: number; label: string; labelFull: string; date: string;
+  posts: number; eng: number; score: number; comments: number;
+  peak: { title: string; link: string; source: string; created: number; score: number; comments: number } | null;
+};
+type OverviewPayload = {
+  now: number;
+  days: OverviewDay[];
+  table: OverviewDay[];
+  counts: { total: number; platformTotal: number; bySource: Record<string, number>; security: number };
+  categoryCounts: Record<string, number>;
+  sources: string[];
+  topics: TopicSpike[];
+  hours: { counts: number[]; total: number };
+  hooks: { agg: any; bySource: any };
+  manual: { platform: string; eng: number; text: string; ts?: number }[];
+  geo: any;
+  lastAnalysis: any;
+  analyzedAt: number | null;
+};
 type Plat = 'all' | 'x' | 'linkedin' | 'instagram' | 'threads' | 'tiktok' | 'youtube';
 type Win = 7 | 30 | 90;
+/** How many day buckets the server keeps (90 days of chart + 90 before it). */
+const WIN_DAYS = 180;
 
 /** Trend chip for a KPI header — the reference layout's "+5%" pill. */
 function DeltaChip({ value, caption }: { value: number | null; caption?: string }) {
@@ -48,7 +70,6 @@ function DeltaChip({ value, caption }: { value: number | null; caption?: string 
 }
 
 export default function Overview() {
-  const { data: d, reload } = useApiState();
   const [analyzing, setAnalyzing] = useState(false);
   const [plat, setPlat] = useState<Plat>('all');
   const [cat, setCat] = useState('');
@@ -56,6 +77,15 @@ export default function Overview() {
   const [win, setWin] = useState<Win>(30);
   const [tableLimit, setTableLimit] = useState<14 | 30>(14);
   const [query, setQuery] = useState('');
+  // the search runs on the server — debounce it so every keystroke is not a query
+  const [dq, setDq] = useState('');
+  useEffect(() => { const t = setTimeout(() => setDq(query), 250); return () => clearTimeout(t); }, [query]);
+
+  const overviewUrl = useMemo(
+    () => `/api/overview?platform=${encodeURIComponent(plat)}&category=${encodeURIComponent(cat)}&q=${encodeURIComponent(dq)}`,
+    [plat, cat, dq]);
+  const { data: d, reload } = useApi<OverviewPayload>(overviewUrl);
+  const { data: timing } = useApi<{ points: TimingPoint[] }>('/api/best-time');
   if (!d) return <EmptyState text="Loading radar…" />;
   const analysis = d.lastAnalysis ?? null;
 
@@ -66,37 +96,24 @@ export default function Overview() {
     setAnalyzing(false);
   };
 
-  const platPosts: PostRow[] = plat === 'all' ? d.posts : d.posts.filter((p: PostRow) => p.source === plat);
-  const catCounts = categoryCounts(platPosts);
-  const posts: PostRow[] = cat ? platPosts.filter(p => inCategory(p, cat)) : platPosts;
-  const now = Date.now();
+  const postCount = d.counts.total;
+  const now = d.now;
   const N = 30; // base window: KPIs, sparklines and the day-by-day table stay on it
 
-  /** Day buckets over `days` ending `shift` days ago (shift=0 → the live window). */
+  /** The day buckets of a window — `shift` moves it back by that many days.
+   *  The server already bucketed the corpus; this only slices the windows. */
   const mkWin = (days: number, shift = 0) => {
-    const vol: number[] = new Array(days).fill(0);
-    const eng: number[] = new Array(days).fill(0);
-    const labels: string[] = [];
-    const labelsFull: string[] = [];
-    const byDay: PostRow[][] = Array.from({ length: days }, () => []);
-    for (let i = days - 1; i >= 0; i--) {
-      const day = new Date(now - (i + shift) * DAY);
-      labels.push(day.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
-      labelsFull.push(day.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }));
-    }
-    for (const p of posts) {
-      if (p.created <= 0) continue;
-      const ago = Math.floor((now - p.created) / DAY) - shift;
-      if (ago >= 0 && ago < days) {
-        const idx = days - 1 - ago;
-        vol[idx] += 1;
-        eng[idx] += p.score + 2 * p.comments;
-        byDay[idx].push(p);
-      }
-    }
-    const engSum = eng.reduce((s: number, v: number) => s + v, 0);
-    const volSum = vol.reduce((s: number, v: number) => s + v, 0);
-    return { vol, eng, labels, labelsFull, byDay, engSum, volSum };
+    const rows = d.days.slice(WIN_DAYS - days - shift, WIN_DAYS - shift);
+    const vol = rows.map((r: OverviewDay) => r.posts);
+    const eng = rows.map((r: OverviewDay) => r.eng);
+    return {
+      vol, eng,
+      labels: rows.map((r: OverviewDay) => r.label),
+      labelsFull: rows.map((r: OverviewDay) => r.labelFull),
+      byDay: rows,
+      engSum: eng.reduce((s: number, v: number) => s + v, 0),
+      volSum: vol.reduce((s: number, v: number) => s + v, 0),
+    };
   };
 
   const base = mkWin(N);       // KPIs, sparklines, day-by-day table
@@ -132,47 +149,32 @@ export default function Overview() {
 
   // ---- collected mix ----
   const bySrc: Record<string, number> = { x: 0, linkedin: 0, instagram: 0, threads: 0 };
-  let sec = 0;
-  for (const p of posts) {
-    if (p.source in bySrc) bySrc[p.source]++;
-    if (p.security) sec++;
-  }
-  const total = posts.length || 1;
+  for (const [k, v] of Object.entries(d.counts.bySource)) if (k in bySrc) bySrc[k] = v;
+  const sec = d.counts.security;
+  const total = postCount || 1;
 
   // ---- winners ----
   const manual: { platform: string; eng: number; text: string; ts?: number }[] = d.manual || [];
   const manualEng = manual.reduce((s: number, m: { eng: number }) => s + (m.eng || 0), 0);
 
-  // ---- day-by-day rows for the table (search + limit live here) ----
-  type TableRow = { i: number; e: number; dayPosts: PostRow[] };
-  const tableRows = base.eng
-    .map((e: number, i: number): TableRow => ({ i, e, dayPosts: base.byDay[i] }))
-    .filter((r: TableRow) => r.dayPosts.length)
-    .reverse()
-    .filter((r: TableRow) => {
-      if (!query.trim()) return true;
-      const q = query.toLowerCase();
-      const stamp = new Date(now - (N - 1 - r.i) * DAY);
-      const hay = `${stamp.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} ${r.dayPosts.map((p: PostRow) => p.title).join(' ')}`.toLowerCase();
-      return hay.includes(q);
-    });
+  // ---- day-by-day rows for the table (the server filtered + searched them) ----
+  const tableRows: OverviewDay[] = d.table;
   const shownRows = tableRows.slice(0, tableLimit);
 
   const exportCsv = () => {
     const esc = (s: string | number) => `"${String(s).replace(/"/g, '""')}"`;
     const lines = ['date,posts,engagement,score,comments,peak_post,source,posted_at'];
     for (const r of shownRows) {
-      const stamp = new Date(now - (N - 1 - r.i) * DAY);
-      const best = [...r.dayPosts].sort((a: PostRow, b: PostRow) => (b.score + 2 * b.comments) - (a.score + 2 * a.comments))[0];
+      const best = r.peak;
       lines.push([
-        stamp.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }),
-        r.dayPosts.length,
-        r.e,
-        r.dayPosts.reduce((s: number, p: PostRow) => s + p.score, 0),
-        r.dayPosts.reduce((s: number, p: PostRow) => s + p.comments, 0),
-        best.title.replace(/\s+/g, ' '),
-        best.source,
-        new Date(best.created).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
+        r.labelFull,
+        r.posts,
+        r.eng,
+        r.score,
+        r.comments,
+        best ? best.title.replace(/\s+/g, ' ') : '',
+        best ? best.source : '',
+        best ? new Date(best.created).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '',
       ].map(esc).join(','));
     }
     const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
@@ -197,7 +199,7 @@ export default function Overview() {
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-4">
         <h1 className="text-xl font-semibold tracking-tight">Overview</h1>
         <div className="flex flex-wrap items-center gap-2">
-          <Chip tone="a">{posts.length} posts in play</Chip>
+          <Chip tone="a">{postCount} posts in play</Chip>
           {analysis && <Chip tone={analysis.mode === 'ai' ? 'g' : 'a'} title={analysis.mode === 'ai' ? 'AI brief saved on the last run' : 'stats-only brief saved on the last run'}>{analysis.mode === 'ai' ? 'AI brief ready' : 'stats brief ready'}</Chip>}
         </div>
       </div>
@@ -237,13 +239,13 @@ export default function Overview() {
       {/* ---- filter row: platform tabs left, solid collect right ---- */}
       <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
         <div className="inline-flex rounded-lg border border-border bg-card p-1" role="tablist" aria-label="Platform filter">
-          {(['all', 'x', 'linkedin', 'instagram', 'threads', 'tiktok', 'youtube'] as Plat[]).filter(p => p === 'all' || p === plat || d.posts.some((x: PostRow) => x.source === p)).map(p => (
+          {(['all', 'x', 'linkedin', 'instagram', 'threads', 'tiktok', 'youtube'] as Plat[]).filter(p => p === 'all' || p === plat || d.sources.includes(p)).map(p => (
             <button key={p} role="tab" aria-selected={plat === p} onClick={() => setPlat(p)} className={segBtn(plat === p)}>
               {p === 'all' ? 'All' : SNAME[p]}
             </button>
           ))}
         </div>
-        <CategorySelect value={cat} onChange={setCat} counts={catCounts} total={platPosts.length} />
+        <CategorySelect value={cat} onChange={setCat} counts={d.categoryCounts} total={d.counts.platformTotal} />
         <div className="flex-1" />
         <Link href="/sources" className={btnPrimary} title="Collectors for every platform live on the Sources page">
           <RefreshCw className="size-4" aria-hidden="true" />
@@ -412,25 +414,25 @@ export default function Overview() {
               </tr>
             </thead>
             <tbody>
-              {shownRows.map((r: TableRow) => {
-                const stamp = new Date(now - (N - 1 - r.i) * DAY);
-                const dateLabel = stamp.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-                const scoreSum = r.dayPosts.reduce((s: number, p: PostRow) => s + p.score, 0);
-                const cSum = r.dayPosts.reduce((s: number, p: PostRow) => s + p.comments, 0);
-                const best = [...r.dayPosts].sort((a: PostRow, b: PostRow) => (b.score + 2 * b.comments) - (a.score + 2 * a.comments))[0];
-                const bestTime = new Date(best.created).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+              {shownRows.map((r: OverviewDay) => {
+                const best = r.peak;
+                const bestTime = best ? new Date(best.created).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '';
                 return (
                   <tr key={r.i} className="border-b border-border/50 hover:bg-muted/50 transition-colors">
-                    <td className="px-5 py-2 whitespace-nowrap font-medium">{dateLabel}</td>
-                    <td className="px-2 py-2 tabular-nums text-muted-foreground">{r.dayPosts.length}</td>
-                    <td className="px-2 py-2 tabular-nums" title={`${scoreSum} score + 2×${cSum} comments = ${scoreSum + 2 * cSum}`}>
-                      {kfmt(r.e)}
+                    <td className="px-5 py-2 whitespace-nowrap font-medium">{r.label}</td>
+                    <td className="px-2 py-2 tabular-nums text-muted-foreground">{r.posts}</td>
+                    <td className="px-2 py-2 tabular-nums" title={`${r.score} score + 2×${r.comments} comments = ${r.eng}`}>
+                      {kfmt(r.eng)}
                     </td>
                     <td className="px-5 py-2 max-w-[420px]">
-                      <a href={best.link} target="_blank" rel="noreferrer" className="hover:underline line-clamp-1">{best.title}</a>
-                      <div className="text-[11px] text-muted-foreground mt-0.5">
-                        {SNAME[best.source] || best.source} · posted {bestTime} · {kfmt(best.score)} score · {kfmt(best.comments)} comments
-                      </div>
+                      {best ? (
+                        <>
+                          <a href={best.link} target="_blank" rel="noreferrer" className="hover:underline line-clamp-1">{best.title}</a>
+                          <div className="text-[11px] text-muted-foreground mt-0.5">
+                            {SNAME[best.source] || best.source} · posted {bestTime} · {kfmt(best.score)} score · {kfmt(best.comments)} comments
+                          </div>
+                        </>
+                      ) : <span className="text-muted-foreground/50">—</span>}
                     </td>
                   </tr>
                 );
@@ -526,7 +528,7 @@ export default function Overview() {
       </div>
 
       <div className="mt-5">
-        <BestTimeCard timing={d.timing ?? []} platform={plat} />
+        <BestTimeCard timing={timing?.points ?? []} platform={plat} />
       </div>
 
       <div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-2">
@@ -562,7 +564,7 @@ export default function Overview() {
               <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Security vs general</div>
               <StackBar segments={[
                 { label: 'security', value: sec },
-                { label: 'general', value: posts.length - sec },
+                { label: 'general', value: postCount - sec },
               ]} />
             </div>
           </div>

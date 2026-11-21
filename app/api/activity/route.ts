@@ -1,67 +1,56 @@
+// app/api/activity/route.ts — the Activity log's HTTP adapter.
+//
+// GET            → { runs, running } — every run, newest first
+// GET ?summary=  → { running, recent, active } — the cheap poll for the badge
+// GET ?id=<id>   → one run with its full input + output
+// POST           → { action: 'cancel' | 'delete', id } | { action: 'clear' }
+//
+// Every run is a task (ADR-001): the Activity log is one list read from the
+// tasks table, with the step log each task keeps in task_events.
 import { NextResponse, connection } from 'next/server';
 import { getStore } from '@/lib/db';
-import { cancelRun, isLive } from '@/lib/activity';
-import { jobsList, jobAction, deleteJob } from '@/lib/jobs';
+import { cancelTask, deleteTask, getTask } from '@/lib/application/tasks';
+import { activityRuns, activitySummary, taskToRun } from '@/lib/application/activity';
+import { route } from '@/lib/http/route';
 
-/**
- * GET            → { runs, running } — every AI run (Generate, Toolkit, Formats, brief,
- *                  categorizer) merged with Workflow jobs, newest first
- * GET ?id=<id>   → one run with its full input + output
- */
-export async function GET(req: Request) {
+const ACTIVE = ['running', 'queued', 'paused', 'waiting'];
+
+const handler_GET = async (req: Request) => {
   await connection(); // request-time — SQLite reads are sync
   const params = new URL(req.url).searchParams;
   const id = params.get('id');
-  const store = getStore();
+
   if (params.get('summary')) { // cheap poll for the sidebar / top-bar badge
-    const runs = store.listRuns(50);
-    const running = runs.filter(r => r.status === 'running').length
-      + jobsList().filter(j => ['queued', 'running', 'paused'].includes(j.status)).length;
-    // runs that finished in the last 2 minutes — the shell toasts the ones it saw start
-    const recent = runs.filter(r => r.finished && Date.now() - r.finished < 120_000).map(r => ({ id: r.id, kind: r.kind, page: r.page, title: r.title, status: r.status, error: r.error, ms: r.ms }));
-    return NextResponse.json({ running, recent, active: runs.filter(r => r.status === 'running').map(r => r.id) });
+    return NextResponse.json(activitySummary(100));
   }
+
   if (id) {
-    if (id.startsWith('job')) {
-      const j = jobsList().find(x => x.id === id);
-      if (!j) return NextResponse.json({ error: 'not found' }, { status: 404 });
-      return NextResponse.json({ run: jobToRun(j), job: j });
-    }
-    const r = store.getRun(id);
-    if (!r) return NextResponse.json({ error: 'not found' }, { status: 404 });
-    return NextResponse.json({ run: { ...rowOut(r), input: safe(r.input), output: safe(r.output) } });
+    const t = getTask(id);
+    if (!t) return NextResponse.json({ error: 'not found' }, { status: 404 });
+    return NextResponse.json({ run: { ...taskToRun(t), input: t.input, output: unwrap(t.output) } });
   }
-  const runs = [...store.listRuns(300).map(rowOut), ...jobsList().map(jobToRun)].sort((a, b) => b.created - a.created);
-  return NextResponse.json({ runs, running: runs.filter(r => r.status === 'running' || r.status === 'paused' || r.status === 'queued').length });
+
+  const runs = activityRuns(300);
+  return NextResponse.json({ runs, running: runs.filter(r => ACTIVE.includes(r.status)).length });
 }
 
 /** POST { action: 'cancel' | 'delete', id } | { action: 'clear' } (finished runs) */
-export async function POST(req: Request) {
+const handler_POST = async (req: Request) => {
   const body = await req.json().catch(() => ({} as any));
+  if (body?.action === 'clear') return NextResponse.json({ cleared: getStore().clearFinishedTasks() });
   const id = String(body?.id || '');
-  const store = getStore();
-  if (body?.action === 'clear') return NextResponse.json({ cleared: store.clearFinishedRuns() });
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
-  if (id.startsWith('job')) { // Workflow jobs keep their own controls
-    if (body.action === 'cancel') return NextResponse.json(jobAction(id, 'stop'));
-    if (body.action === 'delete') return NextResponse.json(deleteJob(id));
-  }
-  if (body.action === 'cancel') return NextResponse.json({ ok: cancelRun(id) });
-  if (body.action === 'delete') { if (isLive(id)) cancelRun(id); store.delRun(id); return NextResponse.json({ ok: true }); }
+  if (!getTask(id)) return NextResponse.json({ error: 'not found' }, { status: 404 });
+  if (body.action === 'cancel') return NextResponse.json({ ok: cancelTask(id) });
+  if (body.action === 'delete') return NextResponse.json({ ok: deleteTask(id) });
   return NextResponse.json({ error: 'unknown action' }, { status: 400 });
 }
 
-const safe = (s: string) => { try { return JSON.parse(s || 'null'); } catch { return s; } };
-type Out = { id: string; kind: string; title: string; page: string; platform: string; status: string; steps: { label: string; at: number; state: string }[]; provider: string; model: string; error: string; created: number; finished: number | null; ms: number | null };
-function rowOut(r: { id: string; kind: string; title: string; page: string; platform: string; status: string; steps: string; provider: string; model: string; error: string; created: number; finished: number | null; ms: number | null }): Out {
-  return { ...r, steps: Array.isArray(safe(r.steps)) ? safe(r.steps) : [] };
-}
-function jobToRun(j: ReturnType<typeof jobsList>[number]): Out & { result?: string } {
-  const [provider, model] = (j.model || '').split('|');
-  return {
-    id: j.id, kind: 'workflow', title: `Workflow · ${j.kind}${j.topic ? ` — ${j.topic}` : ''}`, page: '/workflows', platform: j.platform,
-    status: j.status === 'done' ? 'done' : j.status, provider: provider || '', model: model || '', error: j.err || '',
-    steps: j.steps.map(s => ({ label: s.label + (s.note ? ` — ${s.note}` : ''), at: j.started || j.created, state: s.state === 'pending' ? 'pending' : s.state })),
-    created: j.created, finished: j.finished, ms: j.finished && j.started ? j.finished - j.started : null,
-  };
-}
+/** A task's output is the use case's `{ status, body }` answer — the page wants the body. */
+const unwrap = (out: unknown) => {
+  const o = out as { status?: number; body?: any } | null;
+  return o && typeof o === 'object' && 'body' in o ? o.body : out;
+};
+
+export const GET = route(handler_GET);
+export const POST = route(handler_POST);

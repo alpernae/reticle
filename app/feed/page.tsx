@@ -3,17 +3,31 @@
 // filters; a stat strip says what the current view contains; each row puts
 // who/where/when on one quiet line, the post itself in the middle, and the
 // numbers in fixed right-hand columns so they line up and compare at a glance.
+//
+// The filtering, the sorting and the paging happen on the server (ADR-004):
+// the browser asks for one page of rows at a time and gets the stats for the
+// whole filtered set alongside them.
 import { useSearchParams } from 'next/navigation';
-import { Suspense, useEffect, useMemo, useState } from 'react';
-import { PageHead, useApiState, AGO } from '@/components/panel';
+import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { PageHead, AGO, notifyRefresh } from '@/components/panel';
 import { Toolbar, ToolRow, Segmented, FilterChip, Stats, PlatTag, Empty, OutlierBadge, PLAT_ORDER, SNAME, num } from '@/components/kit';
 import { ArrowUpRight, Search, ShieldCheck, X } from 'lucide-react';
 import { Sel } from '@/components/sel';
 
-type Post = {
+type FeedPost = {
   id: string; title: string; link: string; score: number; comments: number;
-  created: number; source: string; security?: boolean; topics?: string[];
-  T?: string; views?: number | null; author?: string; authorFollowers?: number; media?: string;
+  created: number; source: string; security: boolean; topics: string[];
+  views: number | null; author: string | null; authorFollowers: number | null;
+  media: string | null; outlier: number;
+};
+type FeedResponse = {
+  posts: FeedPost[];
+  total: number;
+  grandTotal: number;
+  next: string | null;
+  bySource: Record<string, number>;
+  topics: string[];
+  stats: { medianLikes: number; breakouts: number; security: number; newest: number; oldest: number };
 };
 type Sort = 'new' | 'outlier' | 'eng' | 'views';
 const PAGE = 100;
@@ -22,55 +36,64 @@ const GRID = 'grid grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] sm:grid-cols-[minmax(
 const when = (t: number) => new Date(t).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 
 function FeedView() {
-  const { data: d } = useApiState();
   const params = useSearchParams();
   const [src, setSrc] = useState('');
   const [topic, setTopic] = useState(params.get('topic') || '');
   const [sort, setSort] = useState<Sort>('new');
   const [secOnly, setSecOnly] = useState(false);
   const [q, setQ] = useState('');
-  const [limit, setLimit] = useState(PAGE);
+  const [dq, setDq] = useState('');
+  const [page, setPage] = useState<FeedResponse | null>(null);
+  const [rows, setRows] = useState<FeedPost[]>([]);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   useEffect(() => setTopic(params.get('topic') || ''), [params]);
-  useEffect(() => setLimit(PAGE), [src, topic, sort, secOnly, q]);
+  // the search runs on the server — debounce it so every keystroke is not a query
+  useEffect(() => { const t = setTimeout(() => setDq(q), 250); return () => clearTimeout(t); }, [q]);
 
-  const out: Record<string, number> = d?.outliers || {};
-  const all: Post[] = d?.posts || [];
+  const base = useMemo(() => {
+    const p = new URLSearchParams();
+    if (src) p.set('platform', src);
+    if (topic) p.set('topic', topic);
+    if (secOnly) p.set('security', '1');
+    if (dq) p.set('q', dq);
+    p.set('sort', sort);
+    p.set('limit', String(PAGE));
+    return '/api/posts?' + p.toString();
+  }, [src, topic, secOnly, dq, sort]);
 
-  const filtered = useMemo<Post[]>(() => {
-    let r = [...all];
-    if (src) r = r.filter(p => p.source === src);
-    if (topic) r = r.filter(p => p.topics?.includes(topic));
-    if (secOnly) r = r.filter(p => p.security);
-    if (q) { const s = q.toLowerCase(); r = r.filter(p => (p.T || p.title.toLowerCase()).includes(s) || (p.author || '').toLowerCase().includes(s)); }
-    const eng = (p: Post) => p.score + p.comments * 2;
-    r.sort((a, b) =>
-      sort === 'new' ? b.created - a.created
-        : sort === 'outlier' ? (out[b.id] ?? 0) - (out[a.id] ?? 0)
-        : sort === 'views' ? (b.views ?? -1) - (a.views ?? -1) || eng(b) - eng(a)
-        : eng(b) - eng(a));
-    return r;
-  }, [all, out, src, topic, secOnly, sort, q]);
+  // first page — and again whenever the app asks for a refresh
+  useEffect(() => {
+    let alive = true;
+    const load = () => fetch(base).then(r => r.json()).then(j => {
+      if (!alive) return;
+      setPage(j); setRows(j.posts || []); setCursor(j.next || null);
+    }).catch(() => {});
+    load();
+    const h = () => load();
+    window.addEventListener('sc-refresh', h);
+    return () => { alive = false; window.removeEventListener('sc-refresh', h); };
+  }, [base]);
 
-  const counts = useMemo(() => {
-    const c: Record<string, number> = {};
-    for (const p of all) c[p.source] = (c[p.source] || 0) + 1;
-    return c;
-  }, [all]);
+  const loadMore = useCallback(async () => {
+    if (!cursor || busy) return;
+    setBusy(true);
+    try {
+      const j = await fetch(base + '&cursor=' + encodeURIComponent(cursor)).then(r => r.json());
+      setRows(prev => [...prev, ...(j.posts || [])]);
+      setCursor(j.next || null);
+    } catch {}
+    setBusy(false);
+  }, [base, cursor, busy]);
 
-  if (!d) return <div className="py-24 text-center text-muted-foreground">Loading feed…</div>;
+  if (!page) return <div className="py-24 text-center text-muted-foreground">Loading feed…</div>;
 
-  const rows = filtered.slice(0, limit);
   const filtering = Boolean(src || topic || q || secOnly);
   const clear = () => { setSrc(''); setTopic(''); setSecOnly(false); setQ(''); };
-  const topics: string[] = d.topics.map((t: { name: string }) => t.name);
-
-  // what the current view contains
-  const likes = filtered.map(p => p.score).sort((a, b) => a - b);
-  const median = likes.length ? likes[likes.length >> 1] : 0;
-  const winners = filtered.filter(p => (out[p.id] ?? 0) >= 2).length;
-  const sec = filtered.filter(p => p.security).length;
-  const newest = filtered.reduce((m, p) => Math.max(m, p.created), 0);
-  const oldest = filtered.reduce((m, p) => (m === 0 || p.created < m ? p.created : m), 0);
+  const topics: string[] = page.topics || [];
+  const stats = page.stats;
+  const total = page.total;
+  const remaining = Math.max(0, total - rows.length);
 
   return (
     <div className="space-y-4">
@@ -82,7 +105,7 @@ function FeedView() {
       <Toolbar>
         <ToolRow>
           <Segmented ariaLabel="Platform" value={src} onChange={setSrc}
-            options={[{ key: '', label: 'All', count: all.length }, ...PLAT_ORDER.filter(p => counts[p]).map(p => ({ key: p, label: SNAME[p], count: counts[p] }))]} />
+            options={[{ key: '', label: 'All', count: page.grandTotal }, ...PLAT_ORDER.filter(p => page.bySource[p]).map(p => ({ key: p, label: SNAME[p], count: page.bySource[p] }))]} />
           <div className="relative ml-auto w-full sm:w-64">
             <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
             <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search posts or @author" aria-label="Search posts"
@@ -107,15 +130,15 @@ function FeedView() {
               <X className="size-3.5" aria-hidden="true" /> Clear filters
             </button>
           )}
-          <span className="ml-auto text-[12px] tabular-nums text-muted-foreground">{filtered.length.toLocaleString('en-US')} of {all.length.toLocaleString('en-US')} posts</span>
+          <span className="ml-auto text-[12px] tabular-nums text-muted-foreground">{total.toLocaleString('en-US')} of {page.grandTotal.toLocaleString('en-US')} posts</span>
         </ToolRow>
       </Toolbar>
 
       <Stats items={[
-        { label: 'Posts', value: filtered.length.toLocaleString('en-US'), hint: newest ? `${when(oldest).split(',')[0]} – ${when(newest).split(',')[0]}` : undefined },
-        { label: 'Median likes', value: num(median), hint: 'half the posts got more' },
-        { label: 'Breakouts', value: winners, hint: `${filtered.length ? Math.round((winners / filtered.length) * 100) : 0}% beat their creator's normal 2×+`, title: "Posts with 2× or more of their creator's usual engagement" },
-        { label: 'Security', value: `${filtered.length ? Math.round((sec / filtered.length) * 100) : 0}%`, hint: `${sec} posts on security topics` },
+        { label: 'Posts', value: total.toLocaleString('en-US'), hint: stats.newest ? `${when(stats.oldest).split(',')[0]} – ${when(stats.newest).split(',')[0]}` : undefined },
+        { label: 'Median likes', value: num(stats.medianLikes), hint: 'half the posts got more' },
+        { label: 'Breakouts', value: stats.breakouts, hint: `${total ? Math.round((stats.breakouts / total) * 100) : 0}% beat their creator's normal 2×+`, title: "Posts with 2× or more of their creator's usual engagement" },
+        { label: 'Security', value: `${total ? Math.round((stats.security / total) * 100) : 0}%`, hint: `${stats.security} posts on security topics` },
       ]} />
 
       <div className="rounded-xl border border-border bg-card">
@@ -157,7 +180,7 @@ function FeedView() {
                     </div>
                   ) : null}
                 </div>
-                <div className="pt-5 text-right"><OutlierBadge value={out[p.id]} /></div>
+                <div className="pt-5 text-right"><OutlierBadge value={p.outlier} /></div>
                 <div className="pt-5 text-right text-sm font-semibold tabular-nums">{num(p.score)}</div>
                 <div className="hidden sm:block pt-5 text-right text-sm tabular-nums text-muted-foreground">{num(p.comments)}</div>
                 <div className="hidden sm:block pt-5 text-right text-sm tabular-nums text-muted-foreground">{p.views != null ? num(p.views) : '—'}</div>
@@ -166,10 +189,10 @@ function FeedView() {
           </ul>
         )}
 
-        {filtered.length > limit && (
+        {remaining > 0 && (
           <div className="border-t border-border p-3 text-center">
-            <button onClick={() => setLimit(l => l + PAGE)} className="h-8 rounded-lg px-4 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground">
-              Show {Math.min(PAGE, filtered.length - limit)} more · {(filtered.length - limit).toLocaleString('en-US')} left
+            <button onClick={loadMore} disabled={busy} className="h-8 rounded-lg px-4 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50">
+              {busy ? 'Loading…' : `Show ${Math.min(PAGE, remaining)} more · ${remaining.toLocaleString('en-US')} left`}
             </button>
           </div>
         )}

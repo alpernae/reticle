@@ -1,16 +1,17 @@
 import { NextResponse, connection } from 'next/server';
 import { collectYouTube, setYouTubeKey, verifyYouTubeKey, youtubeStatus } from '@/lib/youtube';
+import { route } from '@/lib/http/route';
 
 export const maxDuration = 120;
 
 /** GET — free YouTube Data API collector status (key mask + last run). */
-export async function GET() {
+const handler_GET = async () => {
   await connection(); // request-time: SQLite reads are sync, so without this Next prerenders & caches the response
   return NextResponse.json(youtubeStatus());
 }
 
 /** POST { action: 'save', key } | { action: 'clear' } | { action: 'run', perChannel? } */
-export async function POST(req: Request) {
+const handler_POST = async (req: Request) => {
   const body = await req.json().catch(() => ({} as any));
   if (body?.action === 'clear') { setYouTubeKey(''); return NextResponse.json(youtubeStatus()); }
   if (body?.action === 'save') {
@@ -30,3 +31,6 @@ export async function POST(req: Request) {
   }
   return NextResponse.json({ error: 'unknown action' }, { status: 400 });
 }
+
+export const GET = route(handler_GET);
+export const POST = route(handler_POST);

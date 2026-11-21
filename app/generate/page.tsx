@@ -4,7 +4,7 @@
 // then writes 3 variants; every variant is auto-saved to Winners for logging.
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { Card, CardHead, Chip, PageHead, useApiState, btn, btnPrimary, inputCls, labelCls, notifyActivity, AIHealthChip } from '@/components/panel';
+import { Card, CardHead, Chip, PageHead, useApi, btn, btnPrimary, inputCls, labelCls, notifyActivity, AIHealthChip } from '@/components/panel';
 import { Sparkles, PlugZap, Copy, Check, TriangleAlert, Loader, Flame, ArrowUpRight } from 'lucide-react';
 import { ModelPicker, pickedModel } from '@/components/model-picker';
 import { FORMATS_BY_PLATFORM, FORMAT_PLAYBOOK, type PlatformKey } from '@/lib/playbook';
@@ -29,7 +29,8 @@ type Result = {
 type Win = { id: string; source: string; outlier: number; hookLine: string; author: string | null };
 
 export default function Generate() {
-  const { data: d, reload } = useApiState();
+  const { data: d, reload } = useApi<{ aiHealth: any }>('/api/summary');
+  const { data: topicData } = useApi<{ topics: { name: string; fresh: number }[] }>('/api/topics');
   const [platform, setPlatform] = useState('x');
   const [format, setFormat] = useState(''); // '' = the platform's default format
   const [topic, setTopic] = useState('');
@@ -149,7 +150,7 @@ export default function Generate() {
                 <label className={labelCls}>Topic filter</label>
                 <Sel className={selCls} value={topic} onChange={e => setTopic(e.target.value)}>
                   <option value="">any (your pillars)</option>
-                  {d?.topics?.map((t: any) => <option key={t.name} value={t.name}>{t.name}{t.fresh ? ` · ${t.fresh}` : ''}</option>)}
+                  {topicData?.topics?.map((t: any) => <option key={t.name} value={t.name}>{t.name}{t.fresh ? ` · ${t.fresh}` : ''}</option>)}
                 </Sel>
               </div>
               <div>

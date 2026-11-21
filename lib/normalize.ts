@@ -13,6 +13,8 @@
 import 'server-only';
 import { getStore, type PostRow } from './db';
 import { classify, type Post } from './engine';
+import { bumpDataVersion } from './data-version';
+import { derivePost, storedBaselines } from './derive-post';
 
 export type Platform = 'x' | 'linkedin' | 'instagram' | 'threads' | 'tiktok' | 'youtube';
 export const PLATFORMS: Platform[] = ['x', 'linkedin', 'instagram', 'threads', 'tiktok', 'youtube'];
@@ -312,32 +314,47 @@ export type ImportCounts = { added: number; updated: number; skipped: number };
 /** Persist normalized posts (idempotent: known ids refresh their metrics). */
 export function importNormalized(posts: (NormalizedPost | null)[]): ImportCounts {
   const store = getStore();
-  let added = 0, updated = 0, skipped = 0;
-  for (const n of posts) {
-    if (!n || !n.created) { skipped++; continue; } // no posted time → outside every time-based insight
-    if (Date.now() - n.created > WINDOW_DAYS[n.platform] * 864e5) { skipped++; continue; }
-    if (!n.body && !n.likes && !n.views) { skipped++; continue; }
-    const title = firstLine(n.body) || n.body;
-    const p: Post = {
-      id: n.id, source: n.platform, title: title.slice(0, 300), text: n.body.slice(0, 400),
-      url: n.url, link: n.url, score: n.likes, comments: n.comments, created: n.created,
-      views: n.views ?? undefined, security: false, dev: false,
-    };
-    const row: PostRow = {
-      id: p.id, source: p.source, title: p.title, text: p.text, url: p.url, link: p.link,
-      score: p.score, comments: p.comments, created: p.created, T: '', topics: '[]', security: 0, dev: 0,
-      views: n.views, author: n.author, authorFollowers: n.authorFollowers, authorLocation: n.authorLocation ?? null, shares: n.shares, saves: n.saves,
-      media: n.media, hashtags: JSON.stringify(n.hashtags), body: n.body.slice(0, 5000), durationSec: n.durationSec,
-    };
-    if (store.hasPost(p.id)) { store.upsertPost(row); updated++; continue; }
-    p.text = n.body; // classify on the FULL body, store the snippet
-    classify(p);
-    row.T = (p.T || '').slice(0, 2000); row.topics = JSON.stringify(p.topics || []);
-    row.security = p.security ? 1 : 0; row.dev = p.dev ? 1 : 0;
-    store.upsertPost(row); added++;
-  }
-  if (added || updated) store.prunePosts(Date.now() - MAX_WINDOW_DAYS * 864e5);
-  return { added, updated, skipped };
+  // One transaction for the whole dataset: a crash mid-import leaves the
+  // previous state intact instead of a partial batch (finding F10).
+  const counts = store.tx(() => {
+    let added = 0, updated = 0, skipped = 0;
+    // the yardsticks are read once per import (ADR-004)
+    const baselines = storedBaselines();
+    for (const n of posts) {
+      if (!n || !n.created) { skipped++; continue; } // no posted time → outside every time-based insight
+      if (Date.now() - n.created > WINDOW_DAYS[n.platform] * 864e5) { skipped++; continue; }
+      if (!n.body && !n.likes && !n.views) { skipped++; continue; }
+      const title = firstLine(n.body) || n.body;
+      const p: Post = {
+        id: n.id, source: n.platform, title: title.slice(0, 300), text: n.body.slice(0, 400),
+        url: n.url, link: n.url, score: n.likes, comments: n.comments, created: n.created,
+        views: n.views ?? undefined, security: false, dev: false,
+      };
+      const row: PostRow = {
+        id: p.id, source: p.source, title: p.title, text: p.text, url: p.url, link: p.link,
+        score: p.score, comments: p.comments, created: p.created, T: '', topics: '[]', security: 0, dev: 0,
+        views: n.views, author: n.author, authorFollowers: n.authorFollowers, authorLocation: n.authorLocation ?? null, shares: n.shares, saves: n.saves,
+        media: n.media, hashtags: JSON.stringify(n.hashtags), body: n.body.slice(0, 5000), durationSec: n.durationSec,
+      };
+      // the stored body is what the read model derives from — keep them equal
+      p.body = row.body ?? undefined;
+      p.author = n.author ?? undefined;
+      p.authorFollowers = n.authorFollowers ?? undefined;
+      p.shares = n.shares ?? undefined;
+      p.saves = n.saves ?? undefined;
+      if (store.hasPost(p.id)) { store.upsertPost(row); updated++; derivePost(p, baselines); continue; }
+      p.text = n.body; // classify on the FULL body, store the snippet
+      classify(p);
+      row.T = (p.T || '').slice(0, 2000); row.topics = JSON.stringify(p.topics || []);
+      row.security = p.security ? 1 : 0; row.dev = p.dev ? 1 : 0;
+      store.upsertPost(row); added++;
+      derivePost(p, baselines);
+    }
+    if (added || updated) store.prunePosts(Date.now() - MAX_WINDOW_DAYS * 864e5);
+    if (added || updated) bumpDataVersion(); // the analytics are now stale
+    return { added, updated, skipped };
+  });
+  return counts;
 }
 
 export function importItems(platform: Platform, items: any[]): ImportCounts {

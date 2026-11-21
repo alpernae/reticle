@@ -4,9 +4,10 @@
 // output contract the route can parse.
 import 'server-only';
 import { allPayload } from './engine';
-import { analyze, patternLibrary, patternTable, winners, winnerCard, type Analyzed } from './patterns';
+import { analyze, patternLibrary, patternTable, winners, winnerCard, type Analyzed } from './domain/patterns';
 import { PLATFORM_LIMITS, TOOLS, type ToolDef, type ToolPlatform } from './tools';
-import { replyPrompt } from './replies';
+import { replyPrompt } from './domain/replies';
+import { readTimezone } from './timezone-store';
 
 const AUD: Record<string, string> = {
   mix: 'a mix of mobile developers, SaaS/startup founders and security researchers',
@@ -19,7 +20,7 @@ export type Grounding = { text: string; postsOnPlatform: number; hashtags: { tag
 
 /** Data context for one platform. Falls back to all platforms when the platform is thin. */
 export function grounding(platform: ToolPlatform): Grounding {
-  const rows = analyze(allPayload().posts);
+  const rows = analyze(allPayload().posts, readTimezone());
   const mine = rows.filter(r => r.source === platform);
   const thin = mine.length < 8;
   const pool = thin ? rows : mine;

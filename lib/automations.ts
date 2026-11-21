@@ -15,13 +15,14 @@
 //
 // Stored as JSON in SQLite meta ('automations') — one user, a handful of rows.
 import 'server-only';
-import { getStore } from './db';
-import { tracked, type RunCtx } from './activity';
+import { getStore, type AutomationRow } from './db';
 import { smartAI } from './aichain';
 import { TOOLS } from './tools';
-import { AGENTS } from './jobs';
-import { PLATFORM_HINTS, analysisDigest, digestText } from './engine';
-import { nextRunOf, type Schedule } from './schedule';
+import { nextRunOf, type Schedule } from './domain/schedule';
+import { readTimezone } from './timezone-store';
+import { enqueueTask, listTasks, TERMINAL_STATUSES } from './application/tasks';
+import { workerLabel } from './application/automation-chain';
+import { AGENTS } from './application/workflows';
 
 export type WorkerKind = 'generate' | 'tool' | 'agent' | 'prompt' | 'collect';
 export type ModelRef = { providerID: string; id: string } | null;
@@ -38,7 +39,7 @@ export type AutoStep = {
   withData?: boolean;        // worker 'prompt': include your data digest
   model?: ModelRef;
 };
-export type { Schedule } from './schedule';
+export type { Schedule } from './domain/schedule';
 export type AutoRunRec = { at: number; status: string; runId: string; ms: number | null; error?: string; trigger: 'schedule' | 'manual' };
 export type Automation = {
   id: string; name: string; description: string; enabled: boolean;
@@ -57,15 +58,61 @@ export const WORKERS: { key: WorkerKind; label: string; hint: string }[] = [
 ];
 
 // ---------------- storage ----------------
+// One row per automation in the `automations` table; steps/schedule/history are
+// JSON columns. Legacy meta.automations is moved over on first read.
 const KEY = 'automations';
-export function listAutomations(): Automation[] {
-  try { const v = JSON.parse(getStore().getMeta(KEY) || '[]'); return Array.isArray(v) ? v : []; } catch { return []; }
+
+function parseJson<T>(text: string, fallback: T): T {
+  try { return JSON.parse(text) as T; } catch { return fallback; }
 }
-function saveAll(list: Automation[]) { getStore().setMeta(KEY, JSON.stringify(list)); }
+function rowToAutomation(r: AutomationRow): Automation {
+  return {
+    id: r.id, name: r.name, description: r.description, enabled: !!r.enabled,
+    steps: parseJson<AutoStep[]>(r.steps, []),
+    schedule: parseJson<Schedule>(r.schedule, { type: 'manual' }),
+    nextRun: r.nextRun, lastRun: r.lastRun,
+    history: parseJson<AutoRunRec[]>(r.history, []),
+    created: r.created, updated: r.updated,
+  };
+}
+function automationToRow(a: Automation): AutomationRow {
+  return {
+    id: a.id, name: a.name, description: a.description, enabled: a.enabled ? 1 : 0,
+    steps: JSON.stringify(a.steps), schedule: JSON.stringify(a.schedule),
+    nextRun: a.nextRun, lastRun: a.lastRun, history: JSON.stringify(a.history),
+    created: a.created, updated: a.updated,
+  };
+}
+
+let migratedLegacy = false;
+/** One-time, idempotent move of meta.automations into the table. */
+function migrateLegacyAutomations() {
+  if (migratedLegacy) return;
+  migratedLegacy = true;
+  const store = getStore();
+  const raw = store.getMeta(KEY);
+  if (raw == null) return;
+  try {
+    const list = JSON.parse(raw);
+    if (Array.isArray(list)) for (const a of list as Automation[]) {
+      if (!a?.id || store.getAutomationRow(a.id)) continue;
+      store.upsertAutomationRow(automationToRow(a));
+    }
+  } catch {}
+  store.setMeta(KEY, ''); // the table is authoritative now
+}
+
+export function listAutomations(): Automation[] {
+  migrateLegacyAutomations();
+  return getStore().listAutomationRows().map(rowToAutomation);
+}
 function patch(id: string, fn: (a: Automation) => void) {
-  const list = listAutomations();
-  const a = list.find(x => x.id === id);
-  if (a) { fn(a); saveAll(list); }
+  migrateLegacyAutomations();
+  const row = getStore().getAutomationRow(id);
+  if (!row) return undefined;
+  const a = rowToAutomation(row);
+  fn(a);
+  getStore().upsertAutomationRow(automationToRow(a));
   return a;
 }
 
@@ -100,9 +147,10 @@ function sanitizeSchedule(s: Partial<Schedule> | undefined): Schedule {
 export { nextRunOf };
 
 export function saveAutomation(input: Partial<Automation>): Automation {
-  const list = listAutomations();
+  migrateLegacyAutomations();
   const now = Date.now();
-  const existing = input.id ? list.find(a => a.id === input.id) : undefined;
+  const existingRow = input.id ? getStore().getAutomationRow(input.id) : undefined;
+  const existing = existingRow ? rowToAutomation(existingRow) : undefined;
   const steps = (input.steps || existing?.steps || []).slice(0, 6).map((s, i) => sanitizeStep(s, i));
   if (!steps.length) throw new Error('Add at least one step.');
   const schedule = sanitizeSchedule(input.schedule || existing?.schedule);
@@ -112,172 +160,79 @@ export function saveAutomation(input: Partial<Automation>): Automation {
     name: clean(input.name ?? existing?.name, 80).trim() || 'Untitled automation',
     description: clean(input.description ?? existing?.description, 300),
     enabled, steps, schedule,
-    nextRun: enabled ? nextRunOf(schedule, now) : null,
+    nextRun: enabled ? nextRunOf(schedule, now, readTimezone()) : null,
     lastRun: existing?.lastRun ?? null,
     history: existing?.history || [],
     created: existing?.created || now, updated: now,
   };
-  saveAll(existing ? list.map(x => (x.id === a.id ? a : x)) : [a, ...list]);
+  getStore().upsertAutomationRow(automationToRow(a));
   return a;
 }
-export function deleteAutomation(id: string) { saveAll(listAutomations().filter(a => a.id !== id)); }
+export function deleteAutomation(id: string) { migrateLegacyAutomations(); getStore().deleteAutomationRow(id); }
 export function setEnabled(id: string, on: boolean) {
-  return patch(id, a => { a.enabled = on; a.nextRun = on ? nextRunOf(a.schedule) : null; a.updated = Date.now(); });
+  return patch(id, a => { a.enabled = on; a.nextRun = on ? nextRunOf(a.schedule, Date.now(), readTimezone()) : null; a.updated = Date.now(); });
 }
 
 // ---------------- running ----------------
-const g = globalThis as unknown as { __payloadAutoRunning?: Set<string> };
-const running = () => (g.__payloadAutoRunning ||= new Set());
-export const isRunning = (id: string) => running().has(id);
-
-function fill(prompt: string, prev: string, usePrev: boolean): string {
-  const now = new Date();
-  let p = prompt
-    .replace(/\{\{\s*date\s*\}\}/gi, now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }))
-    .replace(/\{\{\s*weekday\s*\}\}/gi, now.toLocaleDateString('en-US', { weekday: 'long' }));
-  if (/\{\{\s*prev\s*\}\}/i.test(p)) p = p.replace(/\{\{\s*prev\s*\}\}/gi, prev || '(no previous output)');
-  else if (usePrev && prev) p = `${p}\n\nINPUT FROM THE PREVIOUS STEP:\n${prev}`;
-  return p.trim();
+// An automation run is a task (kind "automation"): the worker runs the chain,
+// the steps are in the task's event log, and a restart does not lose the run.
+// `runAutomation` only queues it.
+export function isRunning(id: string): boolean {
+  return listTasks({ kind: 'automation', limit: 100 }).some(t =>
+    !TERMINAL_STATUSES.includes(t.status) && (t.input as any)?.automationId === id);
 }
 
-const post = (body: unknown) => new Request('http://local/api', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-
-/** Turn any worker response into plain text the next step can read. */
-function toText(j: any): string {
-  if (!j || typeof j !== 'object') return String(j ?? '');
-  if (Array.isArray(j.variants)) return j.variants.map((v: any, i: number) => `── Draft ${i + 1}${v.angle ? ` · ${v.angle}` : ''} ──\n${v.text}${v.hashtags?.length ? '\n\n' + v.hashtags.join(' ') : ''}`).join('\n\n');
-  if (Array.isArray(j.items)) return j.items.map((t: string, i: number) => `${i + 1}. ${t}`).join('\n\n');
-  if (Array.isArray(j.slides)) return j.slides.map((s: any, i: number) => `Slide ${i + 1}: ${s.title}\n${s.body}`).join('\n\n');
-  if (typeof j.text === 'string') return j.text;
-  return JSON.stringify(j).slice(0, 4000);
-}
-
-async function runStep(s: AutoStep, prompt: string, ctx: RunCtx): Promise<{ text: string; runId?: string }> {
-  switch (s.worker) {
-    case 'generate': {
-      const { POST } = await import('@/app/api/generate/route');
-      const r = await POST(post({ platform: s.platform, idea: prompt, format: s.format || null, tone: s.tone || null, model: s.model }));
-      const j = await r.json();
-      if (!r.ok || j.error || j.mode !== 'ai') throw new Error(j.aiError || j.error || j.hint || `Generate failed (${r.status})`);
-      if (j.via) ctx.via(j.via);
-      return { text: toText(j), runId: j.runId };
-    }
-    case 'tool': {
-      const def = TOOLS.find(t => t.key === s.tool);
-      if (!def) throw new Error('Pick a Toolkit tool for this step.');
-      const field = def.fields.find(f => f.kind !== 'select') || def.fields[0];
-      const { POST } = await import('@/app/api/tools/route');
-      const r = await POST(post({ tool: def.key, platform: s.platform, input: field ? { [field.key]: prompt } : {}, model: s.model }));
-      const j = await r.json();
-      if (!r.ok || j.error) throw new Error(j.error || `Toolkit failed (${r.status})`);
-      return { text: toText(j), runId: j.runId };
-    }
-    case 'agent': {
-      const { createJob, jobsList } = await import('./jobs');
-      const c = createJob({ kind: s.agent || 'dive', topic: prompt.slice(0, 80), platform: s.platform, model: s.model });
-      if (!c.ok) throw new Error(c.error);
-      for (let waited = 0; waited < 20 * 60_000; waited += 3000) {
-        if (ctx.signal.aborted) throw new Error('cancelled by user');
-        await sleep(3000);
-        const job = jobsList().find(x => x.id === c.id);
-        if (!job) throw new Error('the agent run disappeared');
-        if (job.status === 'done') return { text: job.result, runId: c.id };
-        if (['failed', 'stopped', 'interrupted'].includes(job.status)) throw new Error(job.err || `agent ${job.status}`);
-      }
-      throw new Error('the agent took longer than 20 minutes');
-    }
-    case 'collect': {
-      const { apifyStart } = await import('./apify');
-      const run = await apifyStart(s.platform as never);
-      return { text: `Started the ${PLATFORM_HINTS[s.platform]?.label || s.platform} collector (Apify run ${run.id}). New posts are imported when it finishes.` };
-    }
-    default: {
-      const data = s.withData ? `\n\nMY DATA (only use figures that appear here):\n${digestText(analysisDigest())}` : '';
-      const r = await smartAI(prompt + data, 240_000, s.model, ctx.signal, { platform: s.platform, role: 'workflow' });
-      if (!r.out) throw new Error(r.errors.join(' | ') || 'no answer');
-      ctx.via(r.model);
-      return { text: r.out };
-    }
-  }
-}
-
-export function workerLabel(s: AutoStep): string {
-  const p = PLATFORM_HINTS[s.platform]?.label || s.platform;
-  if (s.worker === 'tool') return `${TOOLS.find(t => t.key === s.tool)?.name || 'Toolkit'} · ${p}`;
-  if (s.worker === 'agent') return `${AGENTS.find(a => a.kind === s.agent)?.name || 'Agent'} · ${p}`;
-  return `${WORKERS.find(w => w.key === s.worker)?.label || s.worker} · ${p}`;
-}
-
-/** Run an automation now (scheduled or manual). Resolves when the chain ends. */
-export async function runAutomation(id: string, trigger: 'schedule' | 'manual'): Promise<{ runId?: string; error?: string }> {
+/** Queue an automation run. Resolves as soon as it is queued. */
+export function runAutomation(id: string, trigger: 'schedule' | 'manual'): { runId?: string; error?: string } {
   const a = listAutomations().find(x => x.id === id);
   if (!a) return { error: 'not found' };
-  if (running().has(id)) return { error: 'already running' };
-  running().add(id);
-  const started = Date.now();
-  let runId = '';
-  try {
-    const res = await tracked(
-      { kind: 'automation', title: `${a.name}`, page: `/automations?id=${a.id}`, platform: a.steps[a.steps.length - 1]?.platform, input: { automation: a.id, trigger, steps: a.steps.map(s => ({ worker: workerLabel(s), prompt: s.prompt })) } },
-      async ctx => {
-        runId = ctx.id;
-        patch(id, x => { x.history = [{ at: started, status: 'running', runId: ctx.id, ms: null, trigger }, ...x.history].slice(0, 15); });
-        const outs: { label: string; text: string; runId?: string }[] = [];
-        let prev = '';
-        for (let i = 0; i < a.steps.length; i++) {
-          if (ctx.signal.aborted) throw new Error('cancelled by user');
-          const s = a.steps[i];
-          ctx.step(`Step ${i + 1}: ${workerLabel(s)}`);
-          const r = await runStep(s, fill(s.prompt, prev, s.usePrev), ctx);
-          outs.push({ label: workerLabel(s), text: r.text, runId: r.runId });
-          prev = r.text;
-        }
-        ctx.step('Saved the result');
-        return { automation: a.id, steps: outs, text: prev };
-      },
-    );
-    patch(id, x => { x.lastRun = started; const h = x.history.find(r => r.runId === res.runId); if (h) { h.status = 'done'; h.ms = Date.now() - started; } });
-    return { runId: res.runId };
-  } catch (e: any) {
-    const msg = String(e?.message || e).slice(0, 300);
-    patch(id, x => {
-      x.lastRun = started;
-      const h = x.history.find(r => r.runId === runId);
-      if (h) { h.status = /cancel/i.test(msg) ? 'cancelled' : 'failed'; h.ms = Date.now() - started; h.error = msg; }
-      else x.history = [{ at: started, status: 'failed', runId, ms: Date.now() - started, error: msg, trigger }, ...x.history].slice(0, 15);
-    });
-    return { runId, error: msg };
-  } finally {
-    running().delete(id);
-  }
+  if (isRunning(id)) return { error: 'already running' };
+  const task = enqueueTask({
+    kind: 'automation',
+    input: { automationId: id, trigger, steps: a.steps.map(s => ({ worker: workerLabel(s), prompt: s.prompt })) },
+    title: a.name,
+    page: `/automations?id=${a.id}`,
+    platform: a.steps[a.steps.length - 1]?.platform,
+    trigger,
+  });
+  patch(id, x => {
+    x.history = [{ at: Date.now(), status: 'running', runId: task.id, ms: null, trigger }, ...x.history].slice(0, 15);
+  });
+  return { runId: task.id };
 }
 
-/** Called by the scheduler tick: start every due automation (not awaited). */
+/** The worker calls this when the chain finishes (or fails). */
+export function recordAutomationRun(id: string, runId: string, status: string, ms: number | null, error?: string) {
+  patch(id, x => {
+    x.lastRun = Date.now();
+    const h = x.history.find(r => r.runId === runId);
+    if (h) {
+      h.status = status;
+      h.ms = ms;
+      if (error) h.error = error;
+    } else {
+      const rec: AutoRunRec = { at: Date.now(), status, runId, ms, trigger: 'manual' };
+      if (error) rec.error = error;
+      x.history = [rec, ...x.history].slice(0, 15);
+    }
+  });
+}
+
+/** Called by the scheduler tick: queue every due automation. */
 export function runDue(now = Date.now()): string[] {
-  const list = listAutomations();
   const started: string[] = [];
-  for (const a of list) {
-    if (!a.enabled || a.nextRun == null || a.nextRun > now || running().has(a.id)) continue;
+  for (const a of listAutomations()) {
+    if (!a.enabled || a.nextRun == null || a.nextRun > now || isRunning(a.id)) continue;
     // move the schedule on BEFORE running, so a slow run is never started twice
-    a.nextRun = a.schedule.type === 'once' ? null : nextRunOf(a.schedule, now);
+    a.nextRun = a.schedule.type === 'once' ? null : nextRunOf(a.schedule, now, readTimezone());
     if (a.schedule.type === 'once') a.enabled = false;
+    a.updated = now;
+    getStore().upsertAutomationRow(automationToRow(a));
     started.push(a.id);
   }
-  if (started.length) {
-    saveAll(list);
-    for (const id of started) void runAutomation(id, 'schedule');
-  }
+  for (const id of started) runAutomation(id, 'schedule');
   return started;
 }
 
-// ---------------- scheduler key (lets the server's own timer through the auth proxy) ----------------
-export function schedulerKey(): string {
-  const store = getStore();
-  let k = store.getMeta('schedulerKey') || '';
-  if (k.length < 32) {
-    k = Array.from(crypto.getRandomValues(new Uint8Array(24)), b => b.toString(16).padStart(2, '0')).join('');
-    store.setMeta('schedulerKey', k);
-  }
-  return k;
-}
+// The scheduler tick runs in-process (lib/startup.ts) — it calls runDue() directly,
+// so there is no scheduler key and no HTTP hop any more.

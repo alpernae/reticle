@@ -1,9 +1,9 @@
-// lib/mindmaps.ts — your own mind maps (stored as JSON in SQLite meta).
+// lib/mindmaps.ts — your own mind maps (one row per map in SQLite).
 // A map is nodes (text, position, kind, optional note) and edges between them.
 // "Expand with AI" asks the model for child ideas of one node, given the path
 // from the root, so a branch grows in context.
 import 'server-only';
-import { getStore } from './db';
+import { getStore, type MindMapRow } from './db';
 
 export type MNodeKind = 'root' | 'idea' | 'post' | 'question' | 'task';
 export type MNode = { id: string; text: string; x: number; y: number; kind: MNodeKind; note?: string; done?: boolean };
@@ -11,16 +11,51 @@ export type MEdge = { id: string; from: string; to: string };
 export type MindMap = { id: string; title: string; nodes: MNode[]; edges: MEdge[]; created: number; updated: number };
 
 const KEY = 'mindmaps';
-export function listMaps(): MindMap[] {
-  try { const v = JSON.parse(getStore().getMeta(KEY) || '[]'); return Array.isArray(v) ? v : []; } catch { return []; }
+
+function parseJson<T>(text: string, fallback: T): T {
+  try { return JSON.parse(text) as T; } catch { return fallback; }
 }
-function saveAll(maps: MindMap[]) { getStore().setMeta(KEY, JSON.stringify(maps)); }
+function rowToMap(r: MindMapRow): MindMap {
+  return {
+    id: r.id, title: r.title,
+    nodes: parseJson<MNode[]>(r.nodes, []),
+    edges: parseJson<MEdge[]>(r.edges, []),
+    created: r.created, updated: r.updated,
+  };
+}
+function mapToRow(m: MindMap): MindMapRow {
+  return { id: m.id, title: m.title, nodes: JSON.stringify(m.nodes), edges: JSON.stringify(m.edges), created: m.created, updated: m.updated };
+}
+
+let migratedLegacy = false;
+/** One-time, idempotent move of meta.mindmaps into the table. */
+function migrateLegacyMaps() {
+  if (migratedLegacy) return;
+  migratedLegacy = true;
+  const store = getStore();
+  const raw = store.getMeta(KEY);
+  if (raw == null) return;
+  try {
+    const maps = JSON.parse(raw);
+    if (Array.isArray(maps)) for (const m of maps as MindMap[]) {
+      if (!m?.id || store.getMindMapRow(m.id)) continue;
+      store.upsertMindMapRow(mapToRow(m));
+    }
+  } catch {}
+  store.setMeta(KEY, ''); // the table is authoritative now
+}
+
+export function listMaps(): MindMap[] {
+  migrateLegacyMaps();
+  return getStore().listMindMapRows().map(rowToMap);
+}
 
 const KINDS: MNodeKind[] = ['root', 'idea', 'post', 'question', 'task'];
 export function saveMap(m: Partial<MindMap>): MindMap {
-  const maps = listMaps();
+  migrateLegacyMaps();
   const now = Date.now();
-  const old = m.id ? maps.find(x => x.id === m.id) : undefined;
+  const oldRow = m.id ? getStore().getMindMapRow(m.id) : undefined;
+  const old = oldRow ? rowToMap(oldRow) : undefined;
   const nodes: MNode[] = (m.nodes || old?.nodes || []).slice(0, 400).map(n => ({
     id: String(n.id).slice(0, 40), text: String(n.text ?? '').slice(0, 300),
     x: Math.round(Number(n.x) || 0), y: Math.round(Number(n.y) || 0),
@@ -35,10 +70,10 @@ export function saveMap(m: Partial<MindMap>): MindMap {
     title: String(m.title ?? old?.title ?? 'Untitled map').slice(0, 80) || 'Untitled map',
     nodes, edges, created: old?.created || now, updated: now,
   };
-  saveAll(old ? maps.map(x => (x.id === map.id ? map : x)) : [map, ...maps]);
+  getStore().upsertMindMapRow(mapToRow(map));
   return map;
 }
-export function deleteMap(id: string) { saveAll(listMaps().filter(m => m.id !== id)); }
+export function deleteMap(id: string) { migrateLegacyMaps(); getStore().deleteMindMapRow(id); }
 
 /** Ready-made starting points. */
 export function templateMap(kind: string): Partial<MindMap> {

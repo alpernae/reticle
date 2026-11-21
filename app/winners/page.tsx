@@ -7,7 +7,7 @@
 //      stored here automatically. After posting, log the real numbers
 //      (views/likes/comments/date) on the row — those feed the analysis.
 import Link from 'next/link';
-import { useApiState, Card, CardHead, Chip, PageHead, btn, btnPrimary, inputCls, labelCls, kfmt } from '@/components/panel';
+import { useApi, Card, CardHead, Chip, PageHead, btn, btnPrimary, inputCls, labelCls, kfmt } from '@/components/panel';
 import { Copy, Check, ExternalLink, Lightbulb, ChevronDown, ChevronRight, Trash2, ClipboardPaste } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { Spinner } from '@/components/panelui/spinner';
@@ -28,7 +28,7 @@ const fmtWhen = (w: string) => {
 };
 
 export default function Winners() {
-  const { data: d, reload } = useApiState();
+  const { data: d, reload } = useApi<{ manual: any[] }>('/api/manual');
   const [target, setTarget] = useState('x');
   const [sugs, setSugs] = useState<Suggestion[] | null>(null);
   const [open, setOpen] = useState<number | null>(null);   // expanding a result row to log stats

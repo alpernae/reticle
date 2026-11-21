@@ -1,11 +1,12 @@
 import { NextResponse, connection } from 'next/server';
 import { getStore } from '@/lib/db';
 import { readApifyStatus, setApifyToken, clearApifyToken, verifyToken, saveConfig, setBudget, pollActiveRuns, reimportRuns, spendInfo, actorPricing, X_DEEP_ACTOR, type ApifyConfig } from '@/lib/apify';
+import { route } from '@/lib/http/route';
 
 /** GET — connection + config + run history. Polls any still-active (or stuck)
  *  runs first, so a collector finishes importing even if the Sources page was
  *  closed mid-run. */
-export async function GET() {
+const handler_GET = async () => {
   await connection(); // request-time: SQLite reads are sync, so without this Next prerenders & caches the response
   try { await pollActiveRuns(); } catch { /* status is still returned */ }
   const st = readApifyStatus();
@@ -21,7 +22,7 @@ export async function GET() {
  *  The token is verified against Apify BEFORE being stored, and stored ONLY in
  *  the local SQLite meta table — it never leaves this machine except to
  *  api.apify.com itself. */
-export async function POST(req: Request) {
+const handler_POST = async (req: Request) => {
   const body = await req.json().catch(() => ({} as any));
   const action = body?.action;
 
@@ -57,3 +58,6 @@ export async function POST(req: Request) {
   setApifyToken(token);
   return NextResponse.json({ ...readApifyStatus(), verifiedAs: v.username });
 }
+
+export const GET = route(handler_GET);
+export const POST = route(handler_POST);

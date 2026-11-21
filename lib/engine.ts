@@ -4,26 +4,37 @@
 // whatever is already in SQLite.
 import 'server-only';
 import { getStore, type PostRow } from './db';
-import { analyze, patternLibrary, patternTable, winners, winnerCard } from './patterns';
-import { findRecycled, recycledText } from './recycle';
-import { geoRegions } from './geo';
+import { readState, writeState, readStateRaw, writeStateRaw } from './app-state';
+import { bumpDataVersion, dataVersion } from './data-version';
+import { currentSnapshot } from './analytics-read';
+import { analyze, patternLibrary, patternTable, winners, winnerCard } from './domain/patterns';
+import { TOPICS as TOPIC_LIST } from './domain/topics';
+import { findRecycled, recycledText } from './domain/recycle';
+import { geoRegions } from './domain/geo';
+import { hourInTz } from './domain/timezone';
+import { readTimezone } from './timezone-store';
+import type { Post, Manual } from './domain/post';
 
-export type Post = {
-  id: string; source: string; title: string; text: string; url: string; link: string; score: number; comments: number; created: number;
-  T?: string; topics?: string[]; security?: boolean; dev?: boolean; views?: number;
-  // v2 normalizer fields (see lib/normalize.ts) — absent on legacy rows
-  author?: string; authorFollowers?: number; authorLocation?: string; shares?: number; saves?: number;
-  media?: string; hashtags?: string[]; body?: string; durationSec?: number;
-  aiCats?: string[]; // AI-assigned audience categories (lib/categories.ts keys)
-};
-export type Manual = { id: number; platform: string; text: string; eng: number; when: string; ts: number; likes?: number | null; comments?: number | null; views?: number | null };
+export type { Post, Manual };
 export type AIStatus = { ok: boolean; message: string; ts: number } | null;
 export type AIAnalysis = { mode: 'ai' | 'stats'; text: string; ts: number; via?: { providerID: string; id: string } | null } | null;
 export type DB = { posts: Post[]; manual: Manual[]; lastCollect: { ts: number; tookMs: number; summary: Record<string, string | number> } | null; lastAI?: AIStatus; lastGoodModel?: { providerID: string; id: string } | null; lastAnalysis?: AIAnalysis };
 
 // ---------------- storage bridge (same shapes, SQLite behind) ----------------
-function load(): DB {
-  reclassifyIfNeeded();
+
+/**
+ * The posts, loaded once per data version.
+ *
+ * Loading the corpus is the most expensive thing this module does: a full
+ * table read plus a JSON parse per row. The cache is keyed by the data
+ * version, so a write invalidates it and nothing else does (ADR-004).
+ */
+let postsCache: { version: number; posts: Post[] } | null = null;
+
+function loadPosts(): Post[] {
+  reclassifyIfNeeded(); // may bump the version — so read it afterwards
+  const version = dataVersion();
+  if (postsCache && postsCache.version === version) return postsCache.posts;
   const db = getStore();
   const posts: Post[] = db.allPosts().map((r: PostRow) => ({
     id: r.id, source: r.source, title: r.title, text: r.text, url: r.url, link: r.link,
@@ -40,12 +51,18 @@ function load(): DB {
     durationSec: r.durationSec != null ? Number(r.durationSec) : undefined,
     aiCats: r.aiCats ? safeTopics(r.aiCats) : undefined,
   }));
+  postsCache = { version, posts };
+  return posts;
+}
+
+function load(): DB {
+  const db = getStore();
   let lastCollect: DB['lastCollect'] = null, lastAI: AIStatus = null, lastGoodModel: DB['lastGoodModel'] = null, lastAnalysis: AIAnalysis = null;
-  try { const v = db.getMeta('lastCollect'); if (v) lastCollect = JSON.parse(v); } catch {}
-  try { const v = db.getMeta('lastAI'); if (v) lastAI = JSON.parse(v); } catch {}
-  try { const v = db.getMeta('lastGoodModel'); if (v) lastGoodModel = JSON.parse(v); } catch {}
-  try { const v = db.getMeta('lastAnalysis'); if (v) lastAnalysis = JSON.parse(v); } catch {}
-  return { posts, manual: db.allManual(), lastCollect, lastAI, lastGoodModel, lastAnalysis };
+  lastCollect = readState<DB['lastCollect']>('lastCollect', null);
+  lastAI = readState<AIStatus>('lastAI', null);
+  lastGoodModel = readState<DB['lastGoodModel']>('lastGoodModel', null);
+  lastAnalysis = readState<AIAnalysis>('lastAnalysis', null);
+  return { posts: loadPosts(), manual: db.allManual(), lastCollect, lastAI, lastGoodModel, lastAnalysis };
 }
 function safeTopics(s: string): string[] { try { const v = JSON.parse(s); return Array.isArray(v) ? v : []; } catch { return []; } }
 
@@ -56,22 +73,7 @@ const MOBILE_RX = /\bios\b|\bandroid\b|\bswift(ui)?\b|\bkotlin\b|\bflutter\b|\bd
 const SAAS_RX = /\bsaas\b|\bstartups?\b|indie ?hack|\bmrr\b|\barr\b|bootstrap(ped|ping)|\bfounders?\b|product hunt|\bchurn\b|\bmicro[- ]?saas\b|\bpaying (users|customers)\b|\bcustomers?\b|\brevenue\b|\bvalidat(e|ed|ing|ion)\b/;
 const DEV = [/\bpython\b/, /\bjavascript\b/, /\btypescript\b/, /\bnode\.?js?\b/, /\breact\b/, /\bvue\b/, /\bsvelte\b/, /\bangular\b/, /\brust\b/, /\bgolang\b/, /\bdotnet\b|\.net\b/, /\bsql\b/, /\bdatabase\b/, /\bapi\b/, /\bdevops\b/, /\bkubernetes\b|\bk8s\b/, /\bdocker\b/, /\blinux\b/, /\bgit(hub|lab)?\b/, /\bopen[- ]?source\b/, /\bprogramm/, /\bdevelop/, /\bcompiler\b/, /\bfront[- ]?end\b/, /\bback[- ]?end\b/, /\bfull[- ]?stack\b/, /\bmachine learning\b/, /(^|\s)ai($|\s)/, /\bllm\b|\bgpt\b|\bclaude\b|\bgemini\b/, /\bframework\b/, /\balgorithm/, /\binterview\b/, MOBILE_RX, SAAS_RX];
 
-export const TOPICS: [string, RegExp][] = [
-  ['AI & LLMs', /\bai\b|\bllm\b|\bllms\b|\bgpt\b|\bclaude\b|\bgemini\b|\bmachine learning\b|openai|anthropic|neural|\bfine[- ]?tun(e|ing)\b/],
-  ['Python', /\bpython\b|pypi|pandas\b|django|flask|fastapi|pytest/],
-  ['JS / Web / Frontend', /\bjavascript\b|\btypescript\b|\breact\b|\bnode\b|\bvue\b|\bsvelte\b|\bangular\b|\bhtml\b|\bcss\b|frontend|web ?dev|browser|\btailwind\b/],
-  ['DevOps & Cloud', /\bdevops\b|\bci\/cd\b|github actions|\bkubernetes\b|\bk8s\b|\bdocker\b|AWS\b|azure\b|\bgcp\b|terraform|cloud|\bdeploy/],
-  ['Cybersecurity', /\bsecurity\b|infosec|cyber|\bcve\b|vulnerab|zero[- ]?day|0day|\bpatch(ed|ing)?\b|advisory/],
-  ['Hacking & Exploits', /\bhack|exploit|\bbreach\b|\bpwn|pentest|bug ?bounty|\bxss\b|\bsqli\b|\bssrf\b|\bmalware\b|\bransomware\b|\bphishing\b|\breverse engineer|\bred team\b/],
-  ['Privacy & OSINT', /\bprivacy\b|\bosint\b|surveillance|forensic|\bleak(ed)?\b|tracking|gdpr|\bdox/],
-  ['Auth & Identity', /\bpassword\b|\bcredentials?\b|\bauth(entication)?\b|\b2fa\b|\bmfa\b|oauth|sso\b/],
-  ['Databases', /\bdatabase\b|\bsql\b|postgres|mysql|sqlite|mongo|redis\b|\bschema\b/],
-  ['Rust / Go / Systems', /\brust\w*\b|golang|\bkernel\b|\bc\+\+\b|\bcpp\b|systems program|memory safety|\bleak(ing)? (memory|ptr)/],
-  ['Career & Growth', /\bcareer\b|\bjob\b|\bjobs\b|\binterview\b|productiv|burnout|remote work|salary|freelanc|\bside project\b|build in public/],
-  ['Mobile Dev', MOBILE_RX],
-  ['SaaS & Startups', SAAS_RX],
-  ['Tools & Launches', /launch(ed|ing)?\b|monetiz|\bpricing\b|\breleased?\b|\bnew tool\b|\bv1\b|\bbeta\b|\bshipped\b/],
-];
+export const TOPICS: [string, RegExp][] = TOPIC_LIST;
 
 export function classify(p: Post) {
   const T = (p.title + ' ' + p.text).toLowerCase();
@@ -82,39 +84,55 @@ export function classify(p: Post) {
 }
 
 /** Bump when TOPICS / niche regexes change — stored posts are re-classified once. */
-const CLASSIFIER_VERSION = '2'; // v2: Mobile Dev + SaaS & Startups audiences
+export const CLASSIFIER_VERSION = '2'; // v2: Mobile Dev + SaaS & Startups audiences
 let classifierChecked = false;
 function reclassifyIfNeeded() {
   if (classifierChecked) return;
   classifierChecked = true;
   const db = getStore();
-  if (db.getMeta('classifierVersion') === CLASSIFIER_VERSION) return;
+  if (readStateRaw('classifierVersion') === CLASSIFIER_VERSION) return;
   for (const r of db.allPosts()) {
     const p = { title: r.title, text: r.body || r.text } as Post;
     classify(p);
     db.setClassification(r.id, (p.T || '').slice(0, 2000), JSON.stringify(p.topics || []), p.security ? 1 : 0, p.dev ? 1 : 0);
   }
-  db.setMeta('classifierVersion', CLASSIFIER_VERSION);
+  writeStateRaw('classifierVersion', CLASSIFIER_VERSION);
+  // the topics changed, so the analytics are stale
+  bumpDataVersion();
 }
 
 // ---------------- analysis ----------------
-export function topicSpikes(dbx: DB = load()) {
+// Each of these is served from the materialized snapshot when it is current
+// (ADR-004). When the snapshot is stale or missing they compute — correctness
+// never depends on the cache, only speed does.
+
+export function topicSpikes(dbx?: DB) {
+  if (!dbx) {
+    const snap = currentSnapshot();
+    if (snap) return snap.payload.topicSpikes;
+  }
+  const d = dbx ?? load();
   const now = Date.now();
   const fresh = [now - 48 * 36e5, now] as [number, number];
   const prev = [now - 96 * 36e5, now - 48 * 36e5] as [number, number];
   const inWin = (p: Post, [a, b]: [number, number]) => p.created >= a && p.created < b;
   return TOPICS.map(([name]) => {
-    const f = dbx.posts.filter(p => inWin(p, fresh) && p.topics!.includes(name));
-    const q = dbx.posts.filter(p => inWin(p, prev) && p.topics!.includes(name));
+    const f = d.posts.filter(p => inWin(p, fresh) && p.topics!.includes(name));
+    const q = d.posts.filter(p => inWin(p, prev) && p.topics!.includes(name));
     const pct = q.length ? Math.round(((f.length - q.length) / q.length) * 100) : (f.length ? 100 : 0);
     return { name, fresh: f.length, prev: q.length, pct, top: [...f].sort((a, b) => (b.score + 2 * b.comments) - (a.score + 2 * a.comments)).slice(0, 3).map(p => ({ title: p.title, source: p.source, link: p.link, score: p.score })) };
   }).sort((a, b) => b.fresh - a.fresh || b.pct - a.pct);
 }
 
-export function hookStats(dbx: DB = load()) {
+export function hookStats(dbx?: DB) {
+  if (!dbx) {
+    const snap = currentSnapshot();
+    if (snap) return snap.payload.hooks;
+  }
+  const d = dbx ?? load();
   const bySource: Record<string, any> = {}; const agg: any = { winners: 0, numbers: 0, how: 0, questions: 0, colon: 0, lenSum: 0 };
-  for (const src of new Set(dbx.posts.map(p => p.source))) {
-    const rows = dbx.posts.filter(p => p.source === src && p.score > 3);
+  for (const src of new Set(d.posts.map(p => p.source))) {
+    const rows = d.posts.filter(p => p.source === src && p.score > 3);
     if (rows.length < 10) continue;
     const scores = rows.map(p => p.score).sort((a, b) => a - b);
     const th = scores[Math.floor(scores.length * 0.75)];
@@ -139,16 +157,22 @@ export function hookStats(dbx: DB = load()) {
   return { agg, bySource };
 }
 
-export function hourHistogram(dbx: DB = load()) {
+export function hourHistogram(dbx?: DB) {
+  if (!dbx) {
+    const snap = currentSnapshot();
+    if (snap) return snap.payload.hours;
+  }
+  const d = dbx ?? load();
   const counts = new Array(24).fill(0);
-  const rows = dbx.posts.filter(p => p.created && p.score > 3);
+  const rows = d.posts.filter(p => p.created && p.score > 3);
   const thPer: Record<string, number> = {};
-  for (const src of new Set(dbx.posts.map(p => p.source))) {
+  for (const src of new Set(d.posts.map(p => p.source))) {
     const scores = rows.filter(p => p.source === src).map(p => p.score).sort((a, b) => a - b);
     thPer[src] = scores[Math.floor(scores.length * 0.8)] || 1;
   }
   const winners = rows.filter(p => p.score >= thPer[p.source]);
-  for (const p of winners) counts[new Date(p.created).getHours()]++;
+  const tz = readTimezone();
+  for (const p of winners) counts[hourInTz(p.created, tz)]++;
   return { counts, total: winners.length };
 }
 
@@ -177,15 +201,35 @@ export type Digest = {
  * SQL-backed digest of the whole database — this is what the AI reads before it
  * writes anything. Richer than the page analytics: window buckets, per-source
  * engagement, security share and rising topics straight out of SQL.
+ *
+ * The expensive parts (the analysis pass, the pattern library, the recycled
+ * clusters, the winner cards) come from the materialized snapshot when it is
+ * current, and are computed otherwise — the numbers are the same either way.
  */
 export function analysisDigest(): Digest {
   const db = getStore();
   const now = Date.now();
-  const spikes = topicSpikes();
-  const rising = spikes.filter(t => t.fresh || t.prev).slice(0, 8).map(t => ({ name: t.name, fresh: t.fresh, prev: t.prev, pct: t.pct }));
-  const ha = hookStats().agg;
-  const rows = analyze(load().posts);
-  const wins = winners(rows, { limit: 8 });
+  const snap = currentSnapshot();
+  const payload = snap?.payload;
+
+  const rising = payload
+    ? payload.risingTopics
+    : topicSpikes().filter(t => t.fresh || t.prev).slice(0, 8).map(t => ({ name: t.name, fresh: t.fresh, prev: t.prev, pct: t.pct }));
+  const ha = payload ? payload.hooks.agg : hookStats().agg;
+
+  let winnerCards: string, patterns: string, recycled: string;
+  if (payload) {
+    winnerCards = payload.winnerCards;
+    patterns = payload.patterns;
+    recycled = payload.recycled;
+  } else {
+    const rows = analyze(load().posts, readTimezone());
+    const wins = winners(rows, { limit: 8 });
+    winnerCards = wins.map((a, i) => winnerCard(a, i, 320)).join('\n\n');
+    patterns = patternTable(patternLibrary(rows), undefined, 10);
+    recycled = recycledText(findRecycled(rows), 4);
+  }
+
   return {
     total: db.count(),
     last24h: db.volumeWindow(now - 864e5),
@@ -194,11 +238,11 @@ export function analysisDigest(): Digest {
     securityShare: Math.round((db.securityCount(now - 30 * 864e5) / Math.max(1, db.count())) * 100),
     risingTopics: rising,
     topPosts: db.topEngaged(now - 7 * 864e5, 8).map(t => ({ title: t.title, source: t.source, link: t.link, score: t.score })),
-    hours: hourHistogram(),
+    hours: payload ? payload.hours : hourHistogram(),
     hooks: { numbers: ha.numbers, how: ha.how, questions: ha.questions, colon: ha.colon, avgLen: ha.avgLen ?? null },
-    winnerCards: wins.map((a, i) => winnerCard(a, i, 320)).join('\n\n'),
-    patterns: patternTable(patternLibrary(rows), undefined, 10),
-    recycled: recycledText(findRecycled(rows), 4),
+    winnerCards,
+    patterns,
+    recycled,
   };
 }
 
@@ -237,22 +281,24 @@ export function statsSummary(d: Digest): string {
 
 export function allPayload() {
   const d = load();
+  const snap = currentSnapshot();
+  // the timing points, the outlier scores and the geo regions come from the
+  // materialized read model — no analysis pass on the request path
+  const rows = getStore().outlierRows();
   return {
     posts: d.posts,
-    topics: topicSpikes(d),
-    hooks: hookStats(d),
-    hours: hourHistogram(d),
+    topics: topicSpikes(),
+    hooks: hookStats(),
+    hours: hourHistogram(),
     // compact timing points for the Best-time card: source, created, outlier score
-    ...(() => {
-      const rows = analyze(d.posts).filter(a => a.created);
-      return {
-        timing: rows.map(a => ({ s: a.source, t: a.created, o: a.outlier })),
-        // post id → outlier score (the Feed shows it on every row)
-        outliers: Object.fromEntries(rows.map(a => [a.id, Math.round(a.outlier * 100) / 100])) as Record<string, number>,
-        // where authors say they are → regions for the Overview planet
-        geo: geoRegions(rows.map(a => ({ source: a.source, author: a.author, authorLocation: a.authorLocation, created: a.created, outlier: a.outlier, title: a.title, link: a.link }))),
-      };
-    })(),
+    timing: rows.map(a => ({ s: a.source, t: a.created, o: a.outlier })),
+    // post id → outlier score (the Feed shows it on every row)
+    outliers: Object.fromEntries(rows.map(a => [a.id, Math.round(a.outlier * 100) / 100])) as Record<string, number>,
+    // where authors say they are → regions for the Overview planet
+    geo: snap?.payload.geo ?? geoRegions(rows.map(a => ({
+      source: a.source, author: a.author || undefined, authorLocation: a.authorLocation || undefined,
+      created: a.created, outlier: a.outlier, title: a.title, link: a.link,
+    }))),
     manual: d.manual,
     lastCollect: d.lastCollect ?? null,
     lastAI: d.lastAI ?? null,
@@ -301,15 +347,15 @@ export function delManual(id: string) {
 }
 
 export function markAI(ok: boolean, message: string) {
-  getStore().setMeta('lastAI', JSON.stringify({ ok, message, ts: Date.now() }));
+  writeState('lastAI', { ok, message, ts: Date.now() });
 }
 
 export function markGoodModel(m: { providerID: string; id: string } | null) {
-  getStore().setMeta('lastGoodModel', JSON.stringify(m));
+  writeState('lastGoodModel', m);
 }
 
 export function markAnalysis(a: NonNullable<AIAnalysis>) {
-  getStore().setMeta('lastAnalysis', JSON.stringify(a));
+  writeState('lastAnalysis', a);
 }
 
 // ---------------- platform formats & fallback skeletons ----------------

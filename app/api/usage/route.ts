@@ -2,6 +2,10 @@ import { NextResponse, connection } from 'next/server';
 import { getStore } from '@/lib/db';
 import { readModelStatus } from '@/lib/ai';
 import { spendInfo } from '@/lib/apify';
+import { readSetting } from '@/lib/settings';
+import { zonedParts, zonedTimeToUtc } from '@/lib/domain/timezone';
+import { readTimezone } from '@/lib/timezone-store';
+import { route } from '@/lib/http/route';
 
 /**
  * GET → AI usage as Reticle itself records it (the sidebar Usage widget):
@@ -11,13 +15,17 @@ import { spendInfo } from '@/lib/apify';
  * so they are not shown.
  */
 const LABEL: Record<string, string> = { 'claude-cli': 'Claude CLI', anthropic: 'Claude API', opencode: 'OpenCode' };
+/** The task kinds that spend AI quota (collectors do not). */
+const AI_KINDS = new Set(['generate', 'tool', 'format-quick', 'format-polish', 'brief', 'categorize', 'refine', 'automation', 'mindmap', 'ask', 'workflow']);
 
-export async function GET() {
+const handler_GET = async () => {
   await connection();
   const store = getStore();
-  const runs = store.listRuns(1000);
-  const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
-  const today = runs.filter(r => r.created >= dayStart.getTime());
+  const runs = store.listTaskRows({ limit: 1000 }).filter(r => AI_KINDS.has(r.kind));
+  const tz = readTimezone();
+  const p = zonedParts(Date.now(), tz);
+  const dayStart = zonedTimeToUtc(p.year, p.month, p.day, 0, 0, tz);
+  const today = runs.filter(r => r.created >= dayStart);
   const week = runs.filter(r => r.created >= Date.now() - 7 * 864e5);
 
   const byProvider: Record<string, number> = {};
@@ -27,14 +35,14 @@ export async function GET() {
   }
   const finished = week.filter(r => r.status !== 'running');
   const done = finished.filter(r => r.status === 'done');
-  const times = done.map(r => r.ms || 0).filter(Boolean).sort((a, b) => a - b);
+  const times = done.map(r => (r.finished && r.started ? r.finished - r.started : 0)).filter(Boolean).sort((a, b) => a - b);
 
   const status = readModelStatus();
   const oc = Object.entries(status).filter(([k]) => k.startsWith('opencode|'));
   const limited = oc.filter(([, v]) => !v.ok && v.retryAt && v.retryAt > Date.now());
   const soonest = limited.map(([, v]) => v.retryAt!).sort((a, b) => a - b)[0] ?? null;
 
-  const budgetRaw = Number(store.getMeta('aiDailyRunBudget'));
+  const budgetRaw = Number(readSetting<number>('aiDailyRunBudget', 0));
   const spend = await spendInfo().catch(() => null);
 
   return NextResponse.json({
@@ -44,3 +52,5 @@ export async function GET() {
     apify: spend && (spend.spend != null || spend.limit > 0) ? { spend: spend.spend, limit: spend.limit, via: spend.via } : null,
   });
 }
+
+export const GET = route(handler_GET);

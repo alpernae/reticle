@@ -1,9 +1,10 @@
 import { NextResponse, connection } from 'next/server';
 import { Service } from '@opencode/client/service';
 import { opencodeCommand } from '@/lib/opencodeai';
+import { route } from '@/lib/http/route';
 
 /** Lists models available through the local OpenCode service + the configured default. */
-export async function GET() {
+const handler_GET = async () => {
   await connection(); // request-time: SQLite reads are sync, so without this Next prerenders & caches the response
   try {
     const command = opencodeCommand(); // native exe on Windows — the .cmd shim can't be spawned without a shell
@@ -29,3 +30,5 @@ export async function GET() {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
+
+export const GET = route(handler_GET);

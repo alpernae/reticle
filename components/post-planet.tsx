@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ArrowUpRight, MapPin, X as XIcon } from 'lucide-react';
 import { Planet, type PlanetHandle } from '@/components/panelui/planet';
 import { Card, CardHead, Chip } from '@/components/panel';
-import type { GeoRegion } from '@/lib/geo';
+import type { GeoRegion } from '@/lib/domain/geo';
 import { convertRange, fmtRange, tzCity, userTz } from '@/lib/besttime';
 
 type Geo = { regions: GeoRegion[]; located: number; unknown: number; noLocation: number };

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { recommendations } from '@/lib/recs';
 import { allPayload, fallbackDraft } from '@/lib/engine';
 import type { Post } from '@/lib/engine';
+import { route } from '@/lib/http/route';
 
 const handlers = new Intl.DateTimeFormat('en-US', {
   month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit',
@@ -11,7 +12,7 @@ const handlers = new Intl.DateTimeFormat('en-US', {
  *  ranked winners turned into draft templates for the requested platform, each
  *  with the full detail line (posted date incl. hour, likes, comments, views,
  *  engagement). Deterministic — no AI call, no invented numbers. */
-export async function GET(req: Request) {
+const handler_GET = async (req: Request) => {
   const q = new URL(req.url).searchParams.get('platform') || 'x';
   const target = ['x', 'linkedin', 'instagram'].includes(q) ? q : 'x';
   const payload = allPayload();
@@ -48,3 +49,5 @@ export async function GET(req: Request) {
 
   return NextResponse.json({ suggestions });
 }
+
+export const GET = route(handler_GET);

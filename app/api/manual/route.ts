@@ -1,9 +1,17 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, connection } from 'next/server';
 import { addManual, delManual, updateManual } from '@/lib/engine';
+import { getStore } from '@/lib/db';
+import { route } from '@/lib/http/route';
+
+/** GET — the stored results (the Winners page's "My results" table). */
+const handler_GET = async () => {
+  await connection();
+  return NextResponse.json({ manual: getStore().allManual() });
+};
 
 /** POST — create a stored result (Generate auto-save), or update one:
  *  { id: 'm:123', likes, comments, views, when } logs the real numbers after posting. */
-export async function POST(req: Request) {
+const handler_POST = async (req: Request) => {
   try {
     const b = await req.json();
     if (b.id) {
@@ -17,7 +25,11 @@ export async function POST(req: Request) {
   }
 }
 
-export async function DELETE(req: Request) {
+const handler_DELETE = async (req: Request) => {
   delManual(new URL(req.url).searchParams.get('id') || '');
   return NextResponse.json({ ok: true });
 }
+
+export const GET = route(handler_GET);
+export const POST = route(handler_POST);
+export const DELETE = route(handler_DELETE);

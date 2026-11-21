@@ -205,13 +205,29 @@ Almost everything is set in the app (Settings and Sources) and stored in SQLite.
 | `OPENCODE_BIN` | auto-detected | Path to a specific `opencode` executable |
 | `CLAUDE_CODE_OAUTH_TOKEN` | — | Optional alternative to saving the Claude token on Settings |
 
+### Your data & backups
+
+Everything Reticle knows lives in **one SQLite file** — `data.sqlite` in the project folder, or in `DATA_DIR` (Docker: `/data`). The posts, your settings, your saved tokens (encrypted), the collector runs and the task history are all in it.
+
+**Settings are typed rows.** Every known setting key has its own schema, checked when it is read and when it is written: a corrupt stored value falls back to its default, and a rejected write leaves the last good value in place. Unknown fields and unknown keys are preserved, so settings written by a newer build survive a round trip.
+
+**Backups.** A nightly task (03:00, local time) writes a consistent copy with SQLite's `VACUUM INTO` into `DATA_DIR/backups/` and keeps the newest seven. The app keeps running while it writes. **Settings → Backups** takes one by hand and lists the copies.
+
+**To restore:**
+
+1. Stop Reticle.
+2. Copy the backup you want over `data.sqlite`, and delete the `data.sqlite-wal` / `data.sqlite-shm` files next to it.
+3. Start Reticle — it migrates the restored file to the current schema on boot.
+
+Keep the **same secrets key**: `RETICLE_SECRET_KEY`, or the `.reticle.key` file next to `data.sqlite`. The key encrypts your saved tokens (AES-256-GCM); without it those tokens cannot be read and you have to enter them again. Your posts, settings and history restore either way.
+
 ### AI providers
 
 The first available provider wins, unless you pin one for a run.
 
 1. **Claude CLI**: your Claude Pro/Max subscription through Claude Code. Install with `npm i -g @anthropic-ai/claude-code` and sign in with `claude` → `/login`, or save a `claude setup-token` token on Settings.
 2. **Claude API**: an API key from console.anthropic.com (Opus, Sonnet or Haiku).
-3. **OpenCode**: local OpenCode service, used as the fallback. On every server start Reticle switches it to Auto mode and starts it in the background (`instrumentation.ts` → `lib/startup.ts`). On Windows it launches the native `opencode.exe` behind the npm shim.
+3. **OpenCode**: local OpenCode service, used as the fallback. Reticle never changes your provider settings on boot — if you turned OpenCode off, it stays off. When it is enabled, the service is started in the background on server start (`instrumentation.ts` → `lib/startup.ts`), and on Windows it launches the native `opencode.exe` behind the npm shim.
 
 Every AI call is built from layers (`lib/playbook.ts`, editable on **Settings → Playbook**): your **creator profile**, then the **platform playbook**, your per-platform **voice note**, the **format** (single post, thread, poll, carousel, Reel, Short…) and finally a **specialist role** for the tool. The Settings preview shows the exact composed prompt.
 
@@ -269,7 +285,7 @@ You can swap any actor on the Sources page. Mappers are defensive, so changed ou
 |---|---|---|
 | Framework | **Next.js 16** (App Router, Turbopack, `cacheComponents`) | Server routes and UI in one process |
 | UI | **PanelUI** + Base UI + Tailwind CSS 4 | Monochrome, keyboard-friendly, dark and light |
-| Database | **SQLite** via `node:sqlite` (WAL) | One file, no server, back up with a copy |
+| Database | **SQLite** via `node:sqlite` (WAL) | One file, no server; nightly `VACUUM INTO` backups |
 | AI | Claude CLI / Claude API / OpenCode | Your subscription first, local fallback |
 | Collectors | Apify Run API, YouTube Data API | Pay-per-result, your own account |
 
@@ -283,14 +299,20 @@ app/                 pages (App Router) and API routes (app/api/*)
 components/          app components (panel shell, model picker, best time, planet…)
   panelui/           PanelUI components (planet, usage, toast, select…)
 lib/
-  db.ts              SQLite schema + lazy migrations
+  domain/            pure logic, no I/O (patterns, post, score, topics, recycle…)
+  application/       use cases (analytics, posts, overview, tasks, backup, health…)
+  http/              route wrapper (session check) + task shim
+  runtime/           the in-process task worker
+  db/                migrations (001–010) + the migration runner
+  db.ts              the store: one handle, tx(), prepared-statement cache
   normalize.ts       one post shape for every platform
   apify.ts           collectors, cost guards, spend limit
   engine.ts          classification, scoring, payloads
-  patterns.ts        outlier score + pattern lifts
   playbook.ts        layered system prompts
   besttime.ts geo.ts timing windows and post-origin geocoding
   limits.ts          platform character limits (X-style counting)
+  backup.ts          VACUUM INTO backups
+docs/architecture/    the backend design + ADR-001…005
 .github/assets/      banner and logo
 ```
 
