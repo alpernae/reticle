@@ -58,10 +58,11 @@ The data set is tiny but heterogeneous. The real problems are *mixing kinds of s
 3. [x] Migration 002: move `meta` keys into `secrets`, `settings`, `automations`, `collector_runs`, `provider_health`, `cache`; drop `accounts`; delete `ensureColumns`.
 4. [x] Wrap `importNormalized` in `tx()` and collapse `upsertPost` to one `INSERT … ON CONFLICT DO UPDATE`.
 5. [x] Nightly `VACUUM INTO` backup task; document restore in README.
+6. [x] Per-key settings schemas, validated on read and write.
 
-## Implementation Notes (2026-11-20)
+## Implementation Notes (2026-11-20, updated 2026-11-21)
 
-The decision landed as written, spread over two sessions:
+The decision landed as written, spread over three sessions:
 
 - **The runner** is `lib/db/migrate.ts` — ordered TypeScript modules applied
   inside one transaction per migration, tracked with `PRAGMA user_version`.
@@ -72,6 +73,12 @@ The decision landed as written, spread over two sessions:
   collector runs, caches, provider health, app state, mind maps and
   trackers. `accounts` and `ensureColumns` are gone; a legacy `meta` value
   migrates lazily on first read and the `meta` copy is cleared.
+- **Every known settings key has a schema.** `lib/settings-schema.ts` holds one
+  hand-written schema per key (`aiConfig`, `apifyConfig`, `creatorProfile`,
+  `playbook`, `timezone` and the budgets); `readSetting` validates on read and
+  `writeSetting` on write. A broken stored row falls back to the default,
+  unknown fields and unknown keys survive a round trip, and an invalid write
+  is refused with `SettingError` (the route wrapper answers 400).
 - **`tx()`** uses `BEGIN IMMEDIATE`; the import path runs its upserts inside
   one transaction. The prepared-statement cache lives on the store handle,
   so a statement is prepared once per process.
@@ -79,11 +86,11 @@ The decision landed as written, spread over two sessions:
   that runs `VACUUM INTO` into `DATA_DIR/backups`, keeps the newest seven
   and reschedules itself for the next 03:00. The Settings page can take one
   by hand; `GET /api/status` reports the copies.
-- **Two deviations.** The `secrets` table stores the ciphertext, the IV and
-  the tag in one row (the decision listed three columns — one row is
-  simpler and keeps the write atomic). And `settings` has no `version`
-  column: the schema is validated on read and write instead, so a stale
-  version would only be a second thing to migrate.
+- **One storage deviation.** The `secrets` table stores the ciphertext, the IV
+  and the tag in one row (the decision listed three columns — one row is
+  simpler and keeps the write atomic). The `settings` table keeps the
+  promised `version` column; it is `1` today, while the per-key schemas guard
+  the value's shape.
 - **Restore** is documented in the README: stop the app, copy a backup over
   `data.sqlite`, start the app — and keep the same secrets key, or the
   stored tokens are unreadable and have to be entered again.
@@ -94,12 +101,6 @@ The decision landed as written, spread over two sessions:
   `infrastructure/db/migrations/`; the files live in `lib/db/migrations/`,
   because ADR-002 replaced the old `infrastructure/` naming with the
   `lib/domain` → `lib/application` → `lib/http` + infra layers.
-- **The per-key settings schema is partial.** The table has the promised
-  shape (`key`, `value` JSON, `version`) and the typed accessors exist, but
-  validation is a per-key parser passed to `readSetting(key, fallback,
-  parse?)` rather than a full schema per key, and `writeSetting` does not
-  validate on write. Enough to keep a bad value from crashing a read; not
-  the complete contract the decision describes.
 - **`tx()` covers the multi-write paths that exist.** The import
   (`lib/normalize.ts`), the analytics rebuild and the tracker batch run in a
   transaction; the categorize batch was moved into one as well. The

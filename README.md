@@ -209,6 +209,8 @@ Almost everything is set in the app (Settings and Sources) and stored in SQLite.
 
 Everything Reticle knows lives in **one SQLite file** — `data.sqlite` in the project folder, or in `DATA_DIR` (Docker: `/data`). The posts, your settings, your saved tokens (encrypted), the collector runs and the task history are all in it.
 
+**Settings are typed rows.** Every known setting key has its own schema, checked when it is read and when it is written: a corrupt stored value falls back to its default, and a rejected write leaves the last good value in place. Unknown fields and unknown keys are preserved, so settings written by a newer build survive a round trip.
+
 **Backups.** A nightly task (03:00, local time) writes a consistent copy with SQLite's `VACUUM INTO` into `DATA_DIR/backups/` and keeps the newest seven. The app keeps running while it writes. **Settings → Backups** takes one by hand and lists the copies.
 
 **To restore:**

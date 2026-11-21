@@ -31,6 +31,12 @@ export function route(handler: RouteHandler) {
       return NextResponse.json(out ?? {});
     } catch (e: any) {
       if (e instanceof HttpError) return NextResponse.json({ error: e.message }, { status: e.status });
+      // any error that declares a status is honoured (a rejected setting is a
+      // 400, not a server error) — without the wrapper importing the layer
+      const declared = Number(e?.status);
+      if (Number.isInteger(declared) && declared >= 400 && declared < 600) {
+        return NextResponse.json({ error: String(e?.message || e) || 'Bad request' }, { status: declared });
+      }
       return NextResponse.json({ error: String(e?.message || e) || 'Server error' }, { status: 500 });
     }
   };
