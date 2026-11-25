@@ -10,11 +10,14 @@
 import 'server-only';
 import { getStore } from '../db';
 import { TOPIC_NAMES } from '../domain/topics';
+import { HALF_LIFE_DAYS, RECENCY_FLOOR } from '../domain/viral';
 
 export type FeedPost = {
   id: string; title: string; link: string; score: number; comments: number; created: number;
   source: string; security: boolean; topics: string[]; views: number | null;
   author: string | null; authorFollowers: number | null; media: string | null; outlier: number;
+  /** The recency-weighted viral score (lift over the baseline × recency). */
+  viral: number;
 };
 
 export type FeedPage = {
@@ -32,12 +35,26 @@ const ENG = `COALESCE(eng, score + 2 * comments + 3 * COALESCE(shares, 0) + 2 * 
 /** The breakout score (the derived column wins). */
 const OUT = `COALESCE(outlier, 0)`;
 
-export type FeedSort = 'new' | 'outlier' | 'eng' | 'views';
+export type FeedSort = 'new' | 'outlier' | 'eng' | 'views' | 'viral';
 
-type Cursor = { s: FeedSort; c: number; e: number; o: number; v: number | null; i: string };
+type Cursor = { s: FeedSort; c: number; e: number; o: number; v: number | null; w: number; n: number; i: string };
+
+/**
+ * The viral score as SQL: the lift over the baseline, weighted by how recent
+ * the post is. The constants come from the domain module, so the formula can
+ * never drift from `viralScore()`. `now` is interpolated as a number (never a
+ * user string) so the same expression can be used in SELECT, ORDER BY and the
+ * cursor predicate without binding it three times.
+ */
+function viralSql(now: number): string {
+  const floor = RECENCY_FLOOR;
+  const half = HALF_LIFE_DAYS;
+  return `${OUT} * (${floor} + ${(1 - floor).toFixed(4)} * pow(0.5, max(0.0, (${Math.floor(now)} - created) / 86400000.0 / ${half})))`;
+}
 
 const SORTS: Record<FeedSort, {
-  order: string;
+  /** The ORDER BY — the viral sort builds its own, from the cursor's clock. */
+  order?: string;
   pred: (cur: Cursor) => { sql: string; args: any[] };
 }> = {
   new: {
@@ -58,6 +75,14 @@ const SORTS: Record<FeedSort, {
       ? ({ sql: `((views IS NULL) AND (${ENG} < ? OR (${ENG} = ? AND id < ?)))`, args: [c.e, c.e, c.i] })
       : ({ sql: `((views IS NOT NULL) AND (views < ? OR (views = ? AND (${ENG} < ? OR (${ENG} = ? AND id < ?)))))`, args: [c.v, c.v, c.e, c.e, c.i] }),
   },
+  viral: {
+    // the expression is rebuilt with the cursor's own reference time, so the
+    // order never shifts under the reader's feet between two pages
+    pred: c => {
+      const v = viralSql(c.n);
+      return { sql: `(${v} < ? OR (${v} = ? AND (${ENG} < ? OR (${ENG} = ? AND id < ?))))`, args: [c.w, c.w, c.e, c.e, c.i] };
+    },
+  },
 };
 
 /** Escape the wildcards of a LIKE pattern. */
@@ -73,7 +98,7 @@ const decodeCursor = (raw: string | null | undefined): Cursor | null => {
   if (!raw) return null;
   try {
     const c = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8')) as Cursor;
-    return c && typeof c.i === 'string' ? c : null;
+    return c && typeof c.i === 'string' ? { ...c, w: Number(c.w) || 0, n: Number(c.n) || 0 } : null;
   } catch { return null; }
 };
 
@@ -107,19 +132,25 @@ export function listPosts(opts: {
   sort?: string; cursor?: string | null; limit?: number;
 } = {}): FeedPage {
   const store = getStore();
-  const sort: FeedSort = (['new', 'outlier', 'eng', 'views'].includes(opts.sort || '') ? opts.sort : 'new') as FeedSort;
+  const sort: FeedSort = (['new', 'outlier', 'eng', 'views', 'viral'].includes(opts.sort || '') ? opts.sort : 'new') as FeedSort;
   const limit = Math.min(200, Math.max(1, Number(opts.limit) || 100));
   const { parts, args: filterArgs } = filterSql(opts);
   const where = whereClause(parts);
 
   // ---- the page ----
   const cur = decodeCursor(opts.cursor);
-  const useCursor = cur && cur.s === sort ? cur : null;
+  // a viral cursor without its reference time cannot be trusted — start over
+  const useCursor = cur && cur.s === sort && (sort !== 'viral' || cur.n > 0) ? cur : null;
+  // the viral order depends on the clock, so the cursor carries the reference
+  // time it was built with — the pages of one listing stay in one order
+  const now = sort === 'viral' ? (useCursor?.n || Math.floor(Date.now())) : Math.floor(Date.now());
+  const VIRAL = viralSql(now);
+  const order = sort === 'viral' ? `${VIRAL} DESC, ${ENG} DESC, id DESC` : SORTS[sort].order!;
   const pred = useCursor ? SORTS[sort].pred(useCursor) : null;
   const sql = `SELECT id, source, title, link, score, comments, created, security, topics, views,
-      author, authorFollowers, media, ${ENG} AS eng, ${OUT} AS outlier
+      author, authorFollowers, media, ${ENG} AS eng, ${OUT} AS outlier, ${VIRAL} AS viral
     FROM posts ${whereClause(parts, pred?.sql)}
-    ORDER BY ${SORTS[sort].order} LIMIT ?`;
+    ORDER BY ${order} LIMIT ?`;
   const rows = store.queryAll<any>(sql, [...filterArgs, ...(pred?.args || []), limit + 1]);
   const hasMore = rows.length > limit;
   const page = rows.slice(0, limit);
@@ -130,6 +161,7 @@ export function listPosts(opts: {
     views: r.views != null ? Number(r.views) : null,
     author: r.author || null, authorFollowers: r.authorFollowers != null ? Number(r.authorFollowers) : null,
     media: r.media || null, outlier: Math.round(Number(r.outlier || 0) * 100) / 100,
+    viral: Math.round(Number(r.viral || 0) * 100) / 100,
   }));
 
   // ---- the next cursor ----
@@ -138,7 +170,7 @@ export function listPosts(opts: {
     const last = page[page.length - 1];
     next = encodeCursor({
       s: sort, c: last.created, e: Number(last.eng || 0), o: Number(last.outlier || 0),
-      v: last.views != null ? Number(last.views) : null, i: last.id,
+      v: last.views != null ? Number(last.views) : null, w: Number(last.viral || 0), n: now, i: last.id,
     });
   }
 

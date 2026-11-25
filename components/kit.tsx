@@ -134,3 +134,16 @@ export function OutlierBadge({ value, size = 'md' }: { value: number | null | un
     </span>
   );
 }
+
+/** The viral score — lift over the baseline, weighted by how recent the post is. */
+export function ViralBadge({ value, size = 'md' }: { value: number | null | undefined; size?: 'md' | 'lg' }) {
+  if (value == null) return <span className="text-muted-foreground">—</span>;
+  const v = Math.max(0, Number(value) || 0);
+  const cls = size === 'lg' ? 'text-lg px-2 py-0.5' : 'text-[12px] px-1.5 py-px';
+  return (
+    <span title={`${v.toFixed(2)}× viral score — how many times the post beat its baseline, weighted by recency`}
+      className={`inline-flex items-baseline rounded-md font-semibold tabular-nums ${cls} ${v >= 3 ? 'bg-foreground text-background' : v >= 2 ? 'bg-muted text-foreground' : 'text-muted-foreground'}`}>
+      {v >= 10 ? v.toFixed(0) : v.toFixed(1)}×
+    </span>
+  );
+}

@@ -219,6 +219,57 @@ export class SocialDB {
       FROM posts ${where} ORDER BY outlier DESC, eng DESC LIMIT ?`).all(...args) as unknown as ReturnType<SocialDB['rankedPostRows']>;
   }
 
+  /**
+   * The candidates for the viral finder: the materialized read model, filtered
+   * in SQL (platform, age, minimum lift) and returned biggest-lift first.
+   * The body comes back truncated — a card needs a preview, and the full text
+   * is fetched on its own when a post is used as inspiration.
+   */
+  viralCandidateRows(opts: { sources?: string[]; since?: number; minLift?: number; limit?: number } = {}): {
+    id: string; source: string; title: string; text: string; link: string; score: number; comments: number;
+    created: number; topics: string; views: number | null; author: string | null; authorFollowers: number | null;
+    shares: number | null; saves: number | null; media: string | null; hashtags: string | null;
+    body: string | null; durationSec: number | null;
+    eng: number; outlier: number; baseline: string; hook: string; hookLine: string; words: number;
+    lengthBucket: string; hasLink: number; emojiCount: number;
+  }[] {
+    const where: string[] = ['created > 0', 'outlier IS NOT NULL'];
+    const args: any[] = [];
+    if (opts.sources?.length) {
+      where.push(`source IN (${opts.sources.map(() => '?').join(', ')})`);
+      args.push(...opts.sources);
+    }
+    if (opts.since) { where.push('created >= ?'); args.push(opts.since); }
+    if (opts.minLift != null) { where.push('outlier >= ?'); args.push(opts.minLift); }
+    args.push(Math.max(1, Math.min(1000, opts.limit ?? 500)));
+    return this.prep(`SELECT id, source, title, text, link, score, comments, created, topics, views, author,
+      authorFollowers, shares, saves, media, hashtags, substr(body, 1, 1200) AS body, durationSec,
+      eng, outlier, COALESCE(baseline, 'platform') AS baseline, COALESCE(hook, 'statement') AS hook,
+      COALESCE(hookLine, '') AS hookLine, COALESCE(words, 0) AS words,
+      COALESCE(lengthBucket, 'short') AS lengthBucket, COALESCE(hasLink, 0) AS hasLink,
+      COALESCE(emojiCount, 0) AS emojiCount
+      FROM posts WHERE ${where.join(' AND ')} ORDER BY outlier DESC, eng DESC LIMIT ?`)
+      .all(...args) as unknown as ReturnType<SocialDB['viralCandidateRows']>;
+  }
+
+  /** One post with its full body — the inspiration flow reads the original. */
+  viralSourcePost(id: string): {
+    id: string; source: string; title: string; text: string; link: string; score: number; comments: number;
+    created: number; topics: string; views: number | null; author: string | null; authorFollowers: number | null;
+    shares: number | null; saves: number | null; media: string | null; hashtags: string | null;
+    body: string | null; durationSec: number | null;
+    eng: number; outlier: number; baseline: string; hook: string; hookLine: string; words: number;
+    lengthBucket: string; hasLink: number; emojiCount: number;
+  } | undefined {
+    return this.prep(`SELECT id, source, title, text, link, score, comments, created, topics, views, author,
+      authorFollowers, shares, saves, media, hashtags, body, durationSec,
+      eng, outlier, COALESCE(baseline, 'platform') AS baseline, COALESCE(hook, 'statement') AS hook,
+      COALESCE(hookLine, '') AS hookLine, COALESCE(words, 0) AS words,
+      COALESCE(lengthBucket, 'short') AS lengthBucket, COALESCE(hasLink, 0) AS hasLink,
+      COALESCE(emojiCount, 0) AS emojiCount
+      FROM posts WHERE id = ?`).get(id) as unknown as ReturnType<SocialDB['viralSourcePost']>;
+  }
+
   // ---- page-scoped reads (ADR-004) ----
   /** Run a read query with bound parameters (prepared statements are cached by SQL text). */
   queryAll<T = any>(sql: string, args: any[] = []): T[] { return this.prep(sql).all(...args) as unknown as T[]; }

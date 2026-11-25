@@ -10,7 +10,7 @@
 import { useSearchParams } from 'next/navigation';
 import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { PageHead, AGO, notifyRefresh } from '@/components/panel';
-import { Toolbar, ToolRow, Segmented, FilterChip, Stats, PlatTag, Empty, OutlierBadge, PLAT_ORDER, SNAME, num } from '@/components/kit';
+import { Toolbar, ToolRow, Segmented, FilterChip, Stats, PlatTag, Empty, OutlierBadge, ViralBadge, PLAT_ORDER, SNAME, num } from '@/components/kit';
 import { ArrowUpRight, Search, ShieldCheck, X } from 'lucide-react';
 import { Sel } from '@/components/sel';
 
@@ -18,7 +18,7 @@ type FeedPost = {
   id: string; title: string; link: string; score: number; comments: number;
   created: number; source: string; security: boolean; topics: string[];
   views: number | null; author: string | null; authorFollowers: number | null;
-  media: string | null; outlier: number;
+  media: string | null; outlier: number; viral: number;
 };
 type FeedResponse = {
   posts: FeedPost[];
@@ -29,7 +29,7 @@ type FeedResponse = {
   topics: string[];
   stats: { medianLikes: number; breakouts: number; security: number; newest: number; oldest: number };
 };
-type Sort = 'new' | 'outlier' | 'eng' | 'views';
+type Sort = 'new' | 'outlier' | 'eng' | 'views' | 'viral';
 const PAGE = 100;
 const GRID = 'grid grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] sm:grid-cols-[minmax(0,1fr)_repeat(4,4.5rem)] items-start gap-x-3';
 
@@ -115,6 +115,7 @@ function FeedView() {
         <ToolRow>
           <Sel value={sort} onChange={e => setSort(e.target.value as Sort)} aria-label="Sort" size="sm" className="w-44">
             <option value="new">Newest first</option>
+            <option value="viral">Viral score</option>
             <option value="outlier">Biggest breakout</option>
             <option value="eng">Most engagement</option>
             <option value="views">Most views</option>
@@ -145,7 +146,9 @@ function FeedView() {
         {/* column labels, once */}
         <div className={`${GRID} border-b border-border px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground`}>
           <span>Post</span>
-          <span className="text-right" title="Engagement vs this creator's normal">Breakout</span>
+          <span className="text-right" title={sort === 'viral' ? 'Lift over the creator’s baseline, weighted by recency' : 'Engagement vs this creator\'s normal'}>
+            {sort === 'viral' ? 'Viral' : 'Breakout'}
+          </span>
           <span className="text-right">Likes</span>
           <span className="hidden sm:block text-right">Comments</span>
           <span className="hidden sm:block text-right" title="Public view count, when the platform shows one">Views</span>
@@ -180,7 +183,9 @@ function FeedView() {
                     </div>
                   ) : null}
                 </div>
-                <div className="pt-5 text-right"><OutlierBadge value={p.outlier} /></div>
+                <div className="pt-5 text-right">
+                  {sort === 'viral' ? <ViralBadge value={p.viral} /> : <OutlierBadge value={p.outlier} />}
+                </div>
                 <div className="pt-5 text-right text-sm font-semibold tabular-nums">{num(p.score)}</div>
                 <div className="hidden sm:block pt-5 text-right text-sm tabular-nums text-muted-foreground">{num(p.comments)}</div>
                 <div className="hidden sm:block pt-5 text-right text-sm tabular-nums text-muted-foreground">{p.views != null ? num(p.views) : '—'}</div>
