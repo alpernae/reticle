@@ -65,6 +65,7 @@ It's built for one person, a solo creator (for example a developer or security r
 <td width="50%" valign="top">
 
 ### 🔭 Recon
+- **Viral finder**: the corpus ranked by how many times each post beat its own baseline — weighted by recency — with the reason on every card
 - **Outlier detection**: every post scored against its creator's median (or engagement per follower for one-off authors)
 - **Pattern lifts** per platform: hook type, format, length, hashtags, emoji, links, posting time
 - **Recycled posts**: the same text posted again, and whether repeats still win
@@ -76,6 +77,7 @@ It's built for one person, a solo creator (for example a developer or security r
 
 ### ✍️ Writing
 - **Generate**: 3 drafts that borrow a winner's *structure* (never its text), in your voice
+- **Make one like this**: from any viral post, generate on its structure — hook, length, format, cadence, CTA — with your topic and your words
 - **Toolkit**: bios, pinned posts, hooks, ideas, captions, threads and Threads chains, titles, descriptions, scripts, replies, repurposing
 - **Visual designers**: YouTube thumbnails, Reel covers, carousels, banners and quote cards, exported as PNG at exact platform sizes
 - **Platform limits enforced**: X counts the way X counts (280), Threads 500, LinkedIn 3,000…
@@ -236,9 +238,10 @@ Every AI call is built from layers (`lib/playbook.ts`, editable on **Settings �
 | Page | What it does |
 |---|---|
 | **Overview** | Post-origin globe, KPIs, topic spikes, **best time to post**, AI brief, platform and category filters |
+| **Viral finder** | Posts from every platform you collect, ranked by how far they beat their own baseline (weighted by recency), each with the reason and a one-click **Make one like this** |
 | **Winners & patterns** | Posts ranked by outlier ×, pattern lifts per platform, recycled posts, "Sort with Claude" for uncategorized posts |
 | **Recommendations** | Ranked winners with why they won and how to adapt them |
-| **Feed** | Every collected post with author, followers, format and metrics |
+| **Feed** | Every collected post with author, followers, format and metrics — sort by newest, **viral score**, breakout, engagement or views |
 | **Generate** | 3 drafts that borrow a winner's structure; pick platform, format, tone and model |
 | **Toolkit** | Per-platform tools for Instagram, Threads, X, LinkedIn and YouTube, plus visual designers with PNG export |
 | **Formats** | Series trackers ("Day N/365" logs: you type the numbers, AI never touches them) and quick posts: polls, hot takes, ask-the-crowd, **mini code challenges with code images** |
@@ -258,6 +261,7 @@ There's no way to know a post will work before it's posted, so Reticle is explic
 | Signal | What it is | Trust it for |
 |---|---|---|
 | **Outlier ×** | Weighted engagement ÷ the creator's own median | Which posts actually broke out |
+| **Viral score** | Outlier ×, damped by age (half every 45 days, never below 55%) | Which posts are worth learning from *now* |
 | **Pattern lift** | How posts with a trait did vs the median, per platform (n ≥ 5) | Which structures tend to win |
 | **Pattern-fit** | Each draft fingerprinted and matched against the lifts (geometric mean, small samples shrunk toward 1×) | Structure, not topic quality |
 | **Measured hashtags** | Hashtags seen in your data with n and median outlier | Tags with evidence; anything else is marked unverified |

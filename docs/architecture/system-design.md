@@ -3,7 +3,7 @@
 **Status:** Implemented (phases 0–4 shipped on 2026-11-20)
 **Date:** 2026-11-17
 **Scope:** Backend only: runtime, data, background work, AI integration, collectors, security boundaries. UI/UX is out of scope.
-**Decision records:** [adr/](adr/) (ADR-001 … ADR-005 — 001, 002, 003, 004, 005 all Accepted)
+**Decision records:** [adr/](adr/) (ADR-001 … ADR-006 — all Accepted)
 
 ---
 
@@ -27,6 +27,8 @@ Reticle's core idea is sound: one local process, one SQLite file, and the user's
 4. **A materialized analytics read model** keyed by a data version. Analytics are computed once per data change instead of once per request. → [ADR-004](adr/0004-analytics-read-model.md)
 
 On top of these: auth checks move into a data-access layer, and the scheduler runs in-process instead of calling its own HTTP endpoint. → [ADR-005](adr/0005-auth-dal-and-in-process-scheduler.md)
+
+And the product side: a viral finder that ranks the corpus by relative lift damped by recency, and a generation flow that copies a winning post's **structure** — never its wording. → [ADR-006](adr/0006-viral-discovery-and-structure-inspired-generation.md)
 
 Nothing here adds a server, a container or a paid dependency.
 

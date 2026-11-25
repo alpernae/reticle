@@ -14,12 +14,15 @@ import { FORMATS_BY_PLATFORM, FORMAT_PLAYBOOK, type PlatformKey } from '../playb
 import { fitScorer } from '../domain/score';
 import { findRecycled, recycledText } from '../domain/recycle';
 import { readTimezone } from '../timezone-store';
+import { viralBrief } from './viral';
 import type { WorkCtx } from './tasks';
 
 export type GenerateInput = {
   platform?: string | null; topic?: string | null; postRef?: string | null; tone?: string | null;
   notes?: string | null; idea?: string | null; format?: string | null; mode?: 'generate' | 'ping';
   model?: { providerID: string; id: string } | null;
+  /** The id of a viral post to imitate — its STRUCTURE only, never its wording. */
+  inspire?: string | null;
 };
 
 /** A use-case answer: the HTTP status the adapter should use and the JSON body.
@@ -43,6 +46,12 @@ export async function pingAI(): Promise<UseCaseResult> {
   return { status: 200, body: { mode: 'ping', ok: false, message: ping.errors.join(' | ') || 'AI unavailable' } };
 }
 
+/** The inspiration, in the shape the page shows it back (structure only). */
+const inspirationOf = (b: ReturnType<typeof viralBrief>) => b ? {
+  id: b.card.id, source: b.card.source, headline: b.card.headline, title: b.card.title,
+  link: b.card.link, author: b.card.author, reasons: b.card.reasons, recipe: b.card.recipe,
+} : null;
+
 /** Generate three platform-ready drafts grounded in the creator's own winners. */
 export async function generateDrafts(body: GenerateInput, ctx: WorkCtx): Promise<UseCaseResult> {
   if (body.mode === 'ping') return pingAI();
@@ -63,8 +72,9 @@ export async function generateDrafts(body: GenerateInput, ctx: WorkCtx): Promise
     const inTopic = (a: Analyzed) => !topicName || !!a.topics?.includes(topicName);
 
     // --- pick the winners the model studies: seed first, then same-platform, then niche cross-platform ---
+    // The inspired post is never one of them: its wording must not reach the model.
     const picked: Analyzed[] = [];
-    const add = (a?: Analyzed) => { if (a && !picked.some(p => p.id === a.id)) picked.push(a); };
+    const add = (a?: Analyzed) => { if (a && a.id !== body.inspire && !picked.some(p => p.id === a.id)) picked.push(a); };
     if (body.postRef) add(rows.find(r => r.id === body.postRef));
     for (const w of winners(rows.filter(inTopic), { platform, limit: 5 })) add(w);
     for (const w of winners(rows.filter(inTopic), { nicheOnly: true, limit: 8 })) if (picked.length < 7) add(w);
@@ -75,10 +85,15 @@ export async function generateDrafts(body: GenerateInput, ctx: WorkCtx): Promise
     const samePlat = rows.filter(r => r.source === platform).length;
     const recycled = recycledText(findRecycled(rows).filter(c => c.platform === platform || samePlat < 6), 4);
 
+    // --- the inspiration: the STRUCTURE of one viral post, never its wording ---
+    const inspire = body.inspire ? viralBrief(body.inspire) : null;
+
     const promptCtx = [
       `TARGET PLATFORM: ${pf.label}. Collected posts on it: ${samePlat}${samePlat < 6 ? ' (thin — lean on cross-platform winners and platform best practice, and say so)' : ''}.`,
       topicName ? `TOPIC FOCUS: ${topicName}${spike ? ` — ${spike.fresh} posts in last 48h (${spike.pct >= 0 ? '+' : ''}${spike.pct}% vs prior 48h)` : ''}.` : 'TOPIC: choose from the creator\'s pillars, whichever fits the winning patterns best.',
       body.idea ? `CREATOR'S OWN IDEA / RAW MATERIAL (build the posts around this):\n${body.idea.slice(0, 2500)}` : '',
+      inspire ? `INSPIRATION BRIEF — imitate this structure exactly (do NOT reuse its words, its topic or its details):
+${inspire.brief}` : '',
       '',
       'WINNER CARDS (study these):',
       picked.length ? picked.map((a, i) => winnerCard(a, i)).join('\n\n') : '(no collected posts yet — rely on platform best practice and say so)',
@@ -97,8 +112,8 @@ ${recycled}` : '',
   TONE: ${TONE_GUIDE[body.tone || 'professional'] || TONE_GUIDE.professional}
   ${body.notes ? `CREATOR NOTES (follow closely): ${body.notes.slice(0, 800)}\n` : ''}
   TASK:
-  1. In "### Pattern" write 3–5 short lines: which winner card(s) you are borrowing from (by #), the exact mechanics that made them outliers, and the evidence from the pattern table. Be honest when evidence is thin.
-  2. Then write 3 DIFFERENT ${pf.label} ${formatLabel ? formatLabel.toLowerCase() + ' ' : ''}drafts for the creator (follow the FORMAT section of the playbook exactly), each borrowing a different winning structure, each on one of the creator's pillars (or the topic focus / idea above). Original wording — never reuse a source's sentences.
+  1. In "### Pattern" write 3–5 short lines: which winner card(s) you are borrowing from (by #), the exact mechanics that made them outliers, and the evidence from the pattern table. Be honest when evidence is thin.${inspire ? '\n  1b. Name the INSPIRATION BRIEF as the structure you are copying (hook shape, length, format, cadence, CTA) and say which parts of it you keep.' : ''}
+  2. Then write 3 DIFFERENT ${pf.label} ${formatLabel ? formatLabel.toLowerCase() + ' ' : ''}drafts for the creator (follow the FORMAT section of the playbook exactly), each borrowing a different winning structure, each on one of the creator's pillars (or the topic focus / idea above). Original wording — never reuse a source's sentences.${inspire ? '\n  2b. Every draft must follow the INSPIRATION BRIEF\'s structure (opening shape, length, format, CTA), but on the creator\'s own topic and in the creator\'s voice.' : ''}
   3. If RECYCLED POSTS are present, make one variant an EVERGREEN post the creator can re-post every few weeks (name it "Evergreen").
   4. Every post must have a strong first line (the hook), follow the platform rules and limits, max 2 emojis, and leave [placeholders] for real details only the creator knows.
   5. CLARITY: if the idea is a product, repo, tool or project, every draft must make clear WHAT it is, WHO it's for and any PREREQUISITE from the idea (stack, platform, tool) within the first 3 lines, and keep the key specific facts (names, features, link). Rewrite the creator's CTA naturally instead of pasting it.
@@ -142,9 +157,9 @@ ${recycled}` : '',
         });
         const fit = fitScorer(rows, platform);
         for (const v of variants) (v as any).fit = fit(v.text + (v.hashtags.length ? '\n' + v.hashtags.join(' ') : ''));
-        return { status: 200, title, body: { mode: 'ai', via: model, ms, platform: pf.label, topic: topicName || 'your pillars', variants, insight, winners: usedCards, ai: allPayload().lastAI } };
+        return { status: 200, title, body: { mode: 'ai', via: model, ms, platform: pf.label, topic: topicName || 'your pillars', variants, insight, winners: usedCards, inspiration: inspirationOf(inspire), ai: allPayload().lastAI } };
       }
-      return { status: 200, title, body: { mode: 'template', platform: pf.label, topic: topicName, variants: fallbackDraft(platform, { title: picked[0]?.title, topic: topicName }).variants, insight: out.slice(0, 1500), hint: 'AI answered but not in the expected format — raw answer shown as the pattern note.', winners: usedCards } };
+      return { status: 200, title, body: { mode: 'template', platform: pf.label, topic: topicName, variants: fallbackDraft(platform, { title: picked[0]?.title, topic: topicName }).variants, insight: out.slice(0, 1500), hint: 'AI answered but not in the expected format — raw answer shown as the pattern note.', winners: usedCards, inspiration: inspirationOf(inspire) } };
     }
     const fb = fallbackDraft(platform, { title: picked[0]?.title, topic: topicName });
     const msg = errors.join(' | ') || 'no AI provider enabled';
@@ -152,6 +167,7 @@ ${recycled}` : '',
       status: 200, title, failure: msg,
       body: {
         mode: 'template', platform: pf.label, topic: topicName, variants: fb.variants, winners: usedCards,
+        inspiration: inspirationOf(inspire),
         aiError: msg,
         hint: `No AI provider answered. Open Settings → AI providers: install/log in to the Claude CLI, add an Anthropic API key, or start OpenCode.`,
       },

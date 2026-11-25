@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import {
   Radar as RadarIcon, MessagesSquare, Sparkles, Trophy, Bookmark, Bot, Lightbulb, Settings as SettingsIcon,
   Sun, Moon, LogOut, FileText, Flame, CalendarCheck, Wrench, Activity as ActivityIcon, Workflow, Network, CalendarClock,
+  TrendingUp,
 } from 'lucide-react';
 import { Logo } from '@/components/logo';
 import { CommandMenu } from '@/components/command-menu';
@@ -121,6 +122,7 @@ export function SignOutButton({ className = '' }: { className?: string }) {
 // ---------- shell ----------
 export const NAV: { href: string; label: string; icon: React.ComponentType<{ className?: string }>; group: string }[] = [
   { href: '/', label: 'Overview', icon: RadarIcon, group: 'Radar' },
+  { href: '/viral', label: 'Viral finder', icon: TrendingUp, group: 'Radar' },
   { href: '/patterns', label: 'Winners & patterns', icon: Flame, group: 'Radar' },
   { href: '/recs', label: 'Recommendations', icon: Lightbulb, group: 'Radar' },
   { href: '/feed', label: 'Feed', icon: MessagesSquare, group: 'Radar' },

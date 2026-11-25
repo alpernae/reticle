@@ -22,11 +22,29 @@ const TONES: { key: string; label: string }[] = [
 
 type Variant = { angle: string; text: string; hashtags: string[]; bestTime?: string; fit?: Fit; firstReply?: string; length?: { shortened: number } };
 type Used = { id: string; source: string; author: string | null; outlier: number; hook: string; link: string };
+/** The viral post a draft is modelled on — its structure, never its wording. */
+type Inspo = {
+  id: string; source: string; headline: string; title: string; link: string;
+  author: string | null; reasons: string[]; recipe: string[];
+};
 type Result = {
   mode: 'ai' | 'template'; platform: string; topic: string; variants: Variant[]; insight?: string; winners?: Used[];
+  inspiration?: Inspo | null;
   aiError?: string; hint?: string; via?: { providerID: string; id: string } | null; ms?: number;
 } | null;
 type Win = { id: string; source: string; outlier: number; hookLine: string; author: string | null };
+
+/** Fetch the structure brief of a viral post — the recipe, never the wording. */
+function loadInspiration(id: string, set: (v: Inspo | null) => void) {
+  fetch('/api/viral/brief?postId=' + encodeURIComponent(id)).then(r => r.json()).then(j => {
+    const c = j?.card;
+    if (!c) return;
+    set({
+      id: c.id, source: c.source, headline: c.headline, title: c.title, link: c.link,
+      author: c.author, reasons: c.reasons || [], recipe: c.recipe || [],
+    });
+  }).catch(() => {});
+}
 
 export default function Generate() {
   const { data: d, reload } = useApi<{ aiHealth: any }>('/api/summary');
@@ -40,6 +58,8 @@ export default function Generate() {
   const [idea, setIdea] = useState('');
   const [notes, setNotes] = useState('');
   const [briefFrom, setBriefFrom] = useState<string | null>(null);
+  const [inspire, setInspire] = useState<string | null>(null);
+  const [inspo, setInspo] = useState<Inspo | null>(null);
   const [wins, setWins] = useState<Win[]>([]);
   const [busy, setBusy] = useState(false);
   const [elapsed, setElapsed] = useState(0);
@@ -61,10 +81,20 @@ export default function Generate() {
         if (typeof inp.notes === 'string') setNotes(inp.notes);
         if (typeof inp.tone === 'string') setTone(inp.tone);
         if (typeof inp.topic === 'string') setTopic(inp.topic);
+        if (typeof inp.inspire === 'string') { setInspire(inp.inspire); loadInspiration(inp.inspire, setInspo); }
         if (j?.run?.output) setRes(j.run.output);
       }).catch(() => {});
     }
     if (q.get('platform') && SNAME[q.get('platform')!]) setPlatform(q.get('platform')!);
+    // "Make one like this" — the viral finder's structure brief
+    const ins = q.get('inspire');
+    if (ins) {
+      setInspire(ins);
+      loadInspiration(ins, setInspo);
+      if (!q.get('platform')) fetch('/api/viral/brief?postId=' + encodeURIComponent(ins)).then(r => r.json()).then(j => {
+        if (j?.card?.source && SNAME[j.card.source]) setPlatform(j.card.source);
+      }).catch(() => {});
+    }
     try { // staged result handed over by the Studio ("Send to Generate")
       const raw = sessionStorage.getItem('sc-studio-brief');
       if (raw) {
@@ -88,7 +118,7 @@ export default function Generate() {
     try {
       const r = await fetch('/api/generate', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ platform, format: format || undefined, topic, postRef: postRef || null, tone, notes, idea, model: pickedModel(model) }),
+        body: JSON.stringify({ platform, format: format || undefined, topic, postRef: postRef || null, tone, notes, idea, inspire: inspire || null, model: pickedModel(model) }),
       });
       const j = await r.json();
       setRes(j);
@@ -168,7 +198,7 @@ export default function Generate() {
             <ModelPicker value={model} onChange={setModel} disabled={busy} />
             <div className="flex items-center gap-2">
               <button className={btnPrimary + ' flex-1 justify-center'} onClick={generate} disabled={busy}>
-                {busy ? <><Loader className="size-4 animate-spin" aria-hidden="true" /> Writing… {elapsed}s</> : <><Sparkles className="size-4" aria-hidden="true" /> Generate 3 posts</>}
+                {busy ? <><Loader className="size-4 animate-spin" aria-hidden="true" /> Writing… {elapsed}s</> : <><Sparkles className="size-4" aria-hidden="true" /> {inspo ? 'Generate 3 like this' : 'Generate 3 posts'}</>}
               </button>
               <button className={btn} title="Test the AI provider chain" onClick={testAI} disabled={busy} aria-label="test AI"><PlugZap className="size-4" aria-hidden="true" /></button>
             </div>
@@ -177,6 +207,35 @@ export default function Generate() {
         </Card>
 
         <div className="space-y-4">
+          {inspo && (
+            <Card>
+              <CardHead title="Based on a viral post" sub={`${inspo.headline} — ${SNAME[inspo.source] || inspo.source}${inspo.author ? ' · @' + inspo.author : ''}`}
+                right={
+                  <div className="flex items-center gap-2">
+                    <a href={inspo.link} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground">
+                      original <ArrowUpRight className="size-3" aria-hidden="true" />
+                    </a>
+                    <button onClick={() => { setInspire(null); setInspo(null); }} className="text-[11px] text-muted-foreground hover:text-foreground">clear</button>
+                  </div>
+                } />
+              <div className="p-4 grid gap-4 sm:grid-cols-2">
+                <div>
+                  <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/70">Why it worked</div>
+                  <ul className="mt-1 space-y-0.5 text-[12px] leading-relaxed text-foreground/85">
+                    {inspo.reasons.map((r, i) => <li key={i} className="flex gap-1.5"><span aria-hidden="true" className="text-muted-foreground/60">—</span><span>{r}</span></li>)}
+                  </ul>
+                </div>
+                <div>
+                  <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/70">Structure being copied</div>
+                  <ul className="mt-1 space-y-0.5 text-[12px] leading-relaxed text-foreground/85">
+                    {inspo.recipe.map((r, i) => <li key={i} className="flex gap-1.5"><span aria-hidden="true" className="text-muted-foreground/60">—</span><span>{r}</span></li>)}
+                  </ul>
+                </div>
+              </div>
+              <div className="px-4 pb-4 text-[11px] text-muted-foreground">Only the shape travels — the drafts are your topic, your words, your voice.</div>
+            </Card>
+          )}
+
           {busy && !res && <Card className="p-6"><div className="animate-pulse space-y-2"><div className="h-3 rounded bg-muted w-1/3" /><div className="h-3 rounded bg-muted w-2/3" /><div className="h-3 rounded bg-muted w-1/2" /></div></Card>}
 
           {res?.mode === 'template' && (
